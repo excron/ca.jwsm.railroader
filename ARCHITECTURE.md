@@ -3,9 +3,9 @@
 ## Preamble
 
 This document captures the architectural decisions for the v1 rebuild of the
-Railroader mod stack. v0 (currently in `_reference/`) was built incrementally
-and accreted a lot of correct patterns alongside several layering mistakes that
-became expensive to retrofit. v1 starts clean from a documented contract.
+Railroader mod stack. v0 lives in `../_reference/` (also archived on GitHub
+under `<name>-v0`). v1 is a clean-slate rebuild as a single monorepo, starting
+from a documented contract.
 
 **Read this before writing any code.** Every decision here exists because v0
 got it wrong somewhere; the lessons-learned section maps each rule back to a
@@ -32,14 +32,48 @@ be readable as "this is why rule X exists."
 
 - **AE smoothing experiment landed in api/host.** Same shape: it had no
   natural home in a "feature mod" because we hadn't drawn the layer line.
-  → v1 makes "feature mods consume api primitives" the only legal pattern for
+  → v1 makes "feature mods consume api contracts" the only legal pattern for
   game-behavior changes.
 
 - **Per-tick simulation patches lived alongside data-exposing patches** in
   `api/host/Patches/`. The DPU air patch (changes physics) and a hypothetical
   KVO-mirror patch (exposes state) were treated as the same kind of thing.
-  → v1 splits **observer patches** (api host) from **behavior patches**
-  (feature mods). Different lifecycles, different review criteria.
+  → v1 splits **observer patches** (api) from **behavior patches** (foundational
+  mods only — physics owns its own). `mods/*` cannot patch at all.
+
+### Closed-loop control
+
+- **AE smoothing exploded a 200-car consist.** v0's attempt to smooth AE
+  throttle/brake actions was written before any physics feedback channel
+  existed. Smoothing the inputs decoupled controls from in-train slack
+  response; rhythmic slack action snapped every coupler in the consist.
+  → v1 has the **closed-loop control rule**: any mod that writes control
+  inputs (throttle, brake) must consume the physics streams those inputs
+  affect. Control-modifying mods declare physics as a hard dep; composition
+  root refuses to bootstrap them without a physics provider registered.
+
+### Physics ground truth
+
+- **Coupler-force math floated free of the game's physics.** v0 used free-body
+  math on top of vanilla's slack-only model, but the derived forces had no
+  causal relationship to anything the game actually computed. Drift between
+  the two models made the result fragile.
+  → v1 has a **single physics source of truth** in the `physics` mod: reads
+  vanilla state, derives richer values, exposes them as streams. Additive,
+  never replacing — vanilla's tick keeps running. Anywhere our truth disagrees
+  with vanilla, vanilla wins for what it controls; our truth informs what
+  *we* control.
+
+### Vanilla UI modification
+
+- **Modifying game UI prefabs was fragile.** v0 reached into game windows
+  (CarInspector, bottom bar, etc.) to inject our controls. Layout changes,
+  prefab updates between game versions, and Unity UI Toolkit edge cases all
+  broke our injections. The "elegant native feel" wasn't worth the fragility.
+  → v1 forbids vanilla UI modification entirely. Our UI lives in **our own
+  surfaces** — windows, our-own-bottom-bar, our-own-toolbars — built on the
+  ui mod's framework. Self-contained ecosystem, less elegant initially,
+  vastly more robust.
 
 ### Directionality
 
@@ -91,8 +125,8 @@ be readable as "this is why rule X exists."
 - **Coalescer keys were ad-hoc and inconsistent.** `engine-control-tick-bail`,
   `consist-topology-lead-fallback`, `dpu-air-postfix` — different shapes,
   different conventions.
-  → v1 enforces hierarchical dotted scope names: `api.host.engine-control.tick`,
-  `mods.dpu.air-postfix`.
+  → v1 enforces hierarchical dotted scope names: `api.consist-topology`,
+  `mods.dpu.air`.
 
 ### UI
 
@@ -106,8 +140,9 @@ be readable as "this is why rule X exists."
 
 - **No USS stylesheet — every visual property set inline.** Buttons rendered
   invisible because they had no `backgroundColor` until we explicitly set it.
-  → v1 ships a small `theme.uss` from day one. Inline styles are the
-  exception, not the default.
+  → v1 ships a small `theme.uss` from day one in the ui mod. Inline styles
+  are the exception, not the default. Mods can't theme — they request
+  tokens from `IThemeService`.
 
 ### Multiplayer
 
@@ -155,7 +190,8 @@ C:\Users\jsm12\OneDrive\Documents\Game_Projects\
 - Anything migrated from `_reference/` to v1 must be **rewritten**, not
   copy-pasted. Reading legacy code as "what the answer looked like before"
   is fine; pasting it forward is how layer violations sneak back in.
-- `_reference/` deletes itself when the GitHub repos are archived (post-v1).
+- `_reference/` self-deletes when it stops being useful as a reading aid.
+  The GitHub `<name>-v0` archives are the long-term preservation.
 
 **Rules for ILSPY:**
 
@@ -169,307 +205,261 @@ C:\Users\jsm12\OneDrive\Documents\Game_Projects\
 ## Layer Model
 
 ```
-L0  Game                               (Assembly-CSharp, read-only)
+L0  Game                                     (Assembly-CSharp, read-only)
        ▲
-       │ Harmony patches + KVO
+       │ Harmony patches (only from L1 + L2; L3 cannot patch)
        │
-L1  Foundation primitives              ┐
-       Logging, Authority, Persistence │  ca.jwsm.railroader.api
-       Coalescing, Replication         │  (everything is one composition root)
-                                       │
-L2  Physics state                      │
-       IPhysicsState aggregate         │
-                                       │
-L3  API contracts                      │
-       Domain interfaces (consist,     │
-       inspector, equipment, etc.)     ┘
+L1  api kernel                               ca.jwsm.railroader.api
+       Composition root, mod lifecycle,
+       ILoggerFactory, IAuthority, bus,
+       streams, registry, command registry,
+       persistence, all cross-mod contracts,
+       observer patches.
        ▲
        │
-L4  UI framework                       ca.jwsm.railroader.ui
-       Windowing, theme, parts         (peer of api)
+L2  Required-foundational mods               ca.jwsm.railroader.physics
+       Implementations of L1 contracts       ca.jwsm.railroader.ui
+       that the system can't function
+       without. Each may patch as needed
+       to do its job. Composition root
+       refuses to bootstrap dependents
+       without them registered.
        ▲
        │
-L5  Consumer mods                      ca.jwsm.railroader.mods\*
-       Feature mods (DPU, AE, ETA)
-       UI mods (windows, gauges)
+L3  Feature mods                             ca.jwsm.railroader.mods\*
+       Consumers, providers, UI
+       contributors. Cannot patch.
 ```
 
 ### Layer rules
 
-- **Dependencies flow downward only.** L5 depends on L1-L4; L4 depends on
-  nothing in L5; L1-L3 depend on L0 only.
-- **No cross-mod L5→L5 dependencies.** Two consumer mods communicate
-  through L1-L3 contracts (via the service registry), never by referencing
-  each other. If they need shared state, that state belongs in L1-L3 or in
-  a shared "primitive mod" both depend on.
-- **L1-L3 know nothing about L5 features.** Adding a new feature mod
-  doesn't require api/host changes. If it does, the api primitive surface
+- **Dependencies flow downward only.** L3 depends on L1-L2; L2 depends on L1
+  only; L1 depends on L0 only.
+- **No cross-mod L3→L3 dependencies on implementations.** Two L3 mods
+  communicate through L1 contracts (via the registry) or through the bus,
+  never by referencing each other's assemblies. If they need shared state,
+  that state belongs in L1 (contract) and a foundational/feature mod that
+  provides it.
+- **L1-L2 know nothing about L3 features.** Adding a new feature mod doesn't
+  require api or foundational-mod changes. If it does, the contract surface
   is wrong.
-- **Patches that change game behavior live in L5.** Patches that observe
-  game state for primitive exposure live in L1/L4 (api/host).
+- **Patches that change game behavior live at L2.** Observer patches that
+  expose game state for primitives live at L1. **L3 cannot patch at all** —
+  if a feature mod thinks it needs to patch, the foundation needs to expose
+  the missing primitive (or the mod is misclassified and should be promoted
+  to L2).
+- **No vanilla UI modification, ever.** Our UI lives in our own surfaces
+  (windows, our-own-bottom-bar, our-own-toolbars), built on the ui mod's
+  framework. Patching game UI prefabs is forbidden at every layer.
 
 ### Smell tests for layer placement
 
 Use these when deciding where new code goes:
 
-1. **"Would multiple unrelated mods break if I deleted this?"** → L1-L3.
+1. **"Would multiple unrelated mods break if I deleted this?"** → L1 (contract)
+   or L2 (implementation).
 2. **"Is this *deciding* something about the train?"** (DPU power, AE
-   smoothing, ETA) → L5 feature mod.
-3. **"Does this just *expose* game state in a typed way?"** → L1-L3.
-4. **"Does this change what the game does at the physics level?"** → L5.
-5. **"Does this render a window?"** → L4 framework if generic, L5 if
-   specific.
+   smoothing, ETA) → L3 feature mod.
+3. **"Does this just *expose* game state in a typed way?"** → L1 contract,
+   L1 observer patch, possibly L2 implementation.
+4. **"Does this change what the game does at the physics level?"** → L2
+   (physics mod) or L3 feature mod consuming physics streams.
+5. **"Does this render UI?"** → ui mod owns the framework; the mod owning
+   the content registers components into ui-owned surfaces. Never patches
+   game UI.
 
 ---
 
-## Three Foundations
+## api kernel
 
-These three primitives are load-bearing for every mod. Built first, used
-everywhere, never retrofitted.
+The api project is the controller. All our mods bootstrap into it on top
+of UMM/Harmony. Stays thin and coherent — never welds heavyweight
+implementations onto itself.
 
-### § 1. Logging
+### Components
 
-**Goal**: our codebase's voice clearly audible in its own log file, scope-
-tagged, single chronological timeline, no Player.log noise.
+- **Composition root + mod lifecycle.** Discovers our mods, validates
+  manifests, wires services, registers patches.
+- **Logging** — `ILoggerFactory` with scoped loggers, single rotating log
+  file, coalescing pipeline. See *Logging* below.
+- **Authority** — `IAuthority` injected into every service for host/client
+  awareness. See *Multiplayer* below.
+- **Communication** — `IEventBus`, stream contracts, `IServiceRegistry`.
+  See *Communication shapes* below.
+- **Command registry** — `ICommandRegistry`. Slash-command registration and
+  dispatch. Owned by api (contract + impl) since it's small and broadly
+  used.
+- **Persistence** — `IPersistenceService`, two-tier API with atomic writes.
+  See *Persistence* below.
+- **All cross-mod contracts** — every interface and value type any mod
+  exposes to or consumes from another lives in api. Physics contracts
+  (`ICouplerForces` …), UI contracts (`IWindowService` …), feature contracts
+  (`IEta`, `IDurability`, `IEngineControl`, …). Implementations live in
+  the mod that owns them.
+- **Observer patches** — Harmony patches that *expose* game state for
+  primitives. Patches that *change* game behavior live in foundational mods.
 
-#### Contract
+### What api does NOT own
 
-```csharp
-ILoggerFactory                                   // registered first thing in composition root
-    ILogger CreateLogger(string scope);          // scope: hierarchical dotted
-
-ILogger
-    void Trace/Debug/Info/Warn/Error(string message, params object[] args);
-    void Coalesce(string key, string message, Severity sev);
-    void CoalesceWarning(string key, string message);
-    // structured: takes object[] for KV expansion, not just strings
-
-ILogPipeline (internal to factory)
-    LevelFilter (per-scope config)
-    Coalescer (5s dedup window, summary on flush)
-    Sinks: [RotatingFileSink, UmmErrorMirrorSink, OverlaySink (dev), ...]
-```
-
-Every service takes `ILoggerFactory` in its constructor and creates its own
-scoped logger. **No statics.** No global access pattern.
-
-#### Scope naming
-
-Hierarchical, dotted, lower-kebab-case:
-
-```
-api.host.bootstrap
-api.host.consist-topology
-api.host.dpu-air
-mods.ui.equipment
-mods.ui.engine-control
-mods.dpu.power-propagation
-mods.ae.smoothing-controller
-```
-
-The mod or component owns its prefix exclusively. Filtering with
-`grep '\[mods.dpu' api-*.log` returns *only* the DPU mod's emissions.
-
-#### File output
-
-```
-Mods\ca.jwsm.railroader.api\logs\
-    api-2026-04-26-184912.log          ← current run (active write)
-    api-2026-04-26-171533.log          ← previous run
-    api-2026-04-26-160203.log
-    api-2026-04-26-152441.log
-    api-2026-04-26-150815.log
-    api-2026-04-26-143022.log          ← oldest kept
-    latest.log                          ← optional hardlink to current
-```
-
-**Rotation rules:**
-
-- ISO-ish timestamp filename (`api-{yyyy-MM-dd-HHmmss}.log`). Natural sort =
-  chronological sort.
-- On startup: enumerate `api-*.log`, sort descending, delete past N.
-  Default `N = 5`. Configurable via mod settings (`maxRetainedLogs`).
-- Files **not matching** `api-*.log` are never touched. Rename to preserve
-  (e.g. `api-bug-report-2026-04-26.log`) — rotation leaves it alone forever.
-- Pattern itself is **not** configurable (would defeat the rename-to-preserve
-  trick).
-
-**Failure handling:**
-
-- Rotation runs in try/catch. Delete failure (locked file, perms) logs a
-  warning *to the new file* and proceeds. Never blocks game startup.
-- File-open failure falls through to UMM logger only. Graceful degradation.
-
-**Convenience:**
-
-- `latest.log` hardlink to active file. Editor pinned to it auto-tails.
-- Errors **also** mirror to UMM logger (Player.log) as a courtesy — anyone
-  glancing at Player.log who sees an exception wants to know which mod faulted.
-  Routine ops/diag logs go to our file alone.
-
-#### Coalescer
-
-- Same key + identical message body collapses within a 5-second window.
-- Flush emits "Suppressed N over Xs" summary line — predictable cadence,
-  not ad-hoc.
-- Coalescing is a **pipeline stage**, not a separately-callable utility.
-  `logger.Coalesce(...)` routes through the pipeline like any other emission.
+- **Implementations of physics or UI contracts** — those live in `physics`
+  and `ui`.
+- **Behavior-modifying patches** — those live in the foundational mod that
+  owns the behavior. `mods/*` cannot patch at all.
+- **Heavyweight subsystems.** If something is big enough to feel like its
+  own thing (physics math, UI framework), promote it to a foundational mod
+  rather than welding it into the kernel.
 
 ---
 
-### § 2. Physics State
+## Communication shapes
 
-**Goal**: ONE source of truth for game physical state. Everything above
-api/host reads through it. Never `Car.velocity` in a feature mod.
+Two well-authored shapes plus a directory:
 
-#### Contract
+### Bus (events)
+
+Discrete pub/sub via `IEventBus`. "Throttle changed", "save loaded",
+"coupling occurred", "DPU mode toggled". Producer publishes when something
+happens; subscribers react.
 
 ```csharp
-IPhysicsState                                    // top-level aggregate
-    IConsistTopology      Topology { get; }
-    IConsistDirection     Direction { get; }
-    IKinematics           Kinematics { get; }
-    IAirState             Air { get; }
-    IPowerState           Power { get; }
-    IMassModel            Mass { get; }
-    ITrackProfile         Track { get; }
-
-IConsistTopology
-    GetGroups(VehicleId selected) → ConsistSnapshot
-    // groups + lead detection (flag-state-based)
-    // frame-scoped cache built in
-
-IConsistDirection
-    Sign DirectionOfTravel(VehicleId selected)
-    int OrientationRelativeToLead(VehicleId loco)        // ±1
-    float SignedSpeedMph(VehicleId loco)                 // in lead's frame
-    float UnsignedSpeedMph(VehicleId loco)               // magnitude only
-
-IKinematics
-    KinematicsSnapshot Get(VehicleId loco)
-    // signed/unsigned mph, m/s, accel, position
-
-IAirState
-    AirSnapshot Get(VehicleId loco)
-    // BP/BC/MR/ER psi, valve states, distributed pressures
-
-IPowerState
-    PowerSnapshot Get(VehicleId loco)
-    // rated TE, applied TE, throttle, reverser, dynamic brake notch + applied
-
-IMassModel
-    MassSnapshot Get(VehicleId selected)
-    // total mass, length, per-car weights, axle count, distribution
-
-ITrackProfile
-    TrackSnapshot Get(VehicleId loco)
-    // current segment, N-segment lookahead with grade + speed limit
-    // configurable lookahead distance
+bus.Publish(new ThrottleChanged(vehicleId, newNotch));
+bus.Subscribe<ThrottleChanged>(e => ...);
 ```
 
-#### Strict rules
+### Streams (services)
 
-- **No consumer above api/host calls `Car.*`, `LocomotiveAirSystem.*`,
-  `BaseLocomotive.*`, etc. directly.** If they need the data, it goes through
-  `IPhysicsState`. If `IPhysicsState` doesn't expose it, that's a primitive
-  gap to fill, not a workaround.
-- All snapshots are **immutable** (`readonly` fields, no setters).
-- All snapshots are **frame-scoped**: refreshed on a defined cadence (likely
-  FixedUpdate for physics-tied data, Update for view-tied data). Caches
-  invalidate per-frame; consumers see consistent within-frame views.
-- **Patches that observe game state to make this layer possible live in
-  api/host/Patches.** Patches that change game behavior live in feature mods.
-- **Caching is the default**, not an opt-in. Every primitive that reads game
-  state caches per frame.
+Continuous producer-cadence push for physics-shaped data. Coupler force,
+kinematics, brake pressure, grade ahead. The producer is computing this
+every tick whether anyone subscribes or not (the physics demands it).
+Consumers subscribe; the producer decides cadence.
 
-#### Naming decision
+```csharp
+ICouplerForces
+    void Subscribe(VehicleId v, Action<CouplerStressSample> handler);
+    CouplerStressSample Latest(VehicleId v);   // cheap snapshot accessor
+```
 
-`IPhysicsState` (state-of-physics, what the layer exposes) preferred over
-`IPhysics` (would imply we *do* physics; we don't, the game does). Subordinate
-interfaces are `IConsistTopology`, `IConsistDirection`, etc. — read as "a view
-on the consist's X."
+`Latest()` is allowed for ergonomics — the producer already has the value
+cached, exposing it isn't extra work. It's a snapshot of the stream, not
+a separate query.
+
+### Registry (directory)
+
+`IServiceRegistry` is how a mod *finds* a stream provider or a service
+implementation. Plumbing, not a communication shape.
+
+```csharp
+var forces = registry.TryGet<ICouplerForces>();   // optional
+var ui     = registry.Get<IWindowService>();      // required
+```
+
+### Boundary rule
+
+Events fire on change, streams flow on cadence.
+**If you'd call `GetX()` every tick, you wrote a stream as a query — fix
+the contract, not the call site.**
+
+### The web exception
+
+The browser client (`ca.jwsm.railroader.web`) consumes a WebSocket published
+by `mods/webview`. WebSocket exists because event-tick cadence renders
+jerkily for moving entities in a browser; continuous streaming gives sub-tick
+interpolation. This is a documented narrow break, **scoped to the browser-
+process boundary**. In-process consumers still use the bus and streams.
 
 ---
 
-### § 3. Multiplayer
+## Foundational mods
 
-**Goal**: every service knows its authority, every patch knows its class,
-every mutation goes through a typed primitive. No `StateManager.IsHost`
-sprinkled at call sites.
+Required-foundational mods sit at L2. The composition root warns or refuses
+to bootstrap dependents without them registered. Each is heavy enough that
+it doesn't belong inside the api kernel, and load-bearing enough that the
+system can't function without it.
 
-#### Contract
+### `physics` — physics ground truth
 
-```csharp
-IAuthority                                       // injected into every service
-    bool IsHost { get; }                         // authoritative for simulation
-    bool IsClient { get; }                       // remote follower
-    bool IsLocal { get; }                        // single-player (≈ host)
-    event Action AuthorityChanged;               // hot-swap (host migration)
+Provides the physics streams other mods rely on.
 
-IReplicatedStateRegistry
-    IReplicatedState<T> Register<T>(string key, T defaultValue);
+- **Additive, never replacing.** Vanilla physics keeps running. Reads vanilla
+  state, derives richer values (real coupler forces, slack action,
+  mass-distributed dynamics), exposes them as streams.
+- **Implements** all physics contracts defined in api: `ICouplerForces`,
+  `IKinematics`, `IAirState`, `IPowerState`, `IMassModel`, `ITrackProfile`,
+  `IConsistTopology`, `IConsistDirection`.
+- **May patch** vanilla code if needed to observe state for derivation.
+  Behavior modification of vanilla physics is allowed but must be deliberate
+  and additive.
 
-IReplicatedState<T>
-    T Get(VehicleId vehicleId);
-    void Set(VehicleId vehicleId, T value);     // host-only (or routed)
-    void Observe(VehicleId vehicleId, Action<T> onChange);
-    // syncs via game's KVO under the hood
+The exact shape of the model — observation-only with better math vs. selective
+intervention via `ControlProperties` — is a phase-3-ish design call.
 
-IRequestRouter
-    Task<TResult> Send<TRequest, TResult>(TRequest request);   // client → host
-    void RegisterHandler<TRequest, TResult>(Func<TRequest, TResult> handler);
-    // host registers; clients invoke; framework handles transport
-```
+### `ui` — UI framework
 
-#### Authority class per service
+Provides the windowing framework, theme, and assets. The "dirty work" of UI
+lives here so the api kernel doesn't have to host it.
 
-Every service declaration includes its authority requirement:
+- **Implements** UI contracts defined in api: `IWindowService`,
+  `IBottomBarService`, `IThemeService`, `IAssetService`, `ISurfaceRegistry`.
+- **Owns** windowing impl, USS theme, fonts/icons/sprites, surface contracts.
+- **Mods contribute components** — they describe content declaratively
+  against named surfaces (Equipment window, our-own-bottom-bar, HUD).
+  Mods never touch Unity UI Toolkit. ui owns rendering.
+- **No game UI patching.** All our UI is self-contained in our own surfaces.
+  Theme drift dies because mods can't theme; asset duplication dies because
+  mods request by key.
+- **Single project, no tiers.** v0's `abstractions/core/runtime` split was
+  a cluster. v1 is one assembly that registers contracts and owns
+  implementation.
 
-```csharp
-[ServiceAuthority(AuthorityClass.HostOnly)]
-public sealed class DpuAirSimulation : IDpuAirSimulation { ... }
+---
 
-[ServiceAuthority(AuthorityClass.Both)]
-public sealed class ConsistTopologyService : IConsistTopology { ... }
+## Feature mods (`mods/*`)
 
-[ServiceAuthority(AuthorityClass.ClientOriginated)]
-public sealed class InspectorActionService : IInspectorActions { ... }
-// client invokes; routes through IRequestRouter to host; host validates + applies
-```
+L3. Each subfolder is one mod that bootstraps into the api kernel.
 
-Composition root reads the attribute; constructs only services compatible
-with current authority. **Host-only service constructed on a client = startup
-error**, not silent runtime weirdness.
+### Hard rule: no patches
 
-#### Patch class per patch
+**`mods/*` cannot Harmony-patch the game.** Period. If a mod thinks it needs
+a patch, that's a signal:
 
-```csharp
-[PatchClass(PatchClass.Simulation)]              // host-only
-[PatchClass(PatchClass.View)]                    // both — render-side adjustments
-[PatchClass(PatchClass.InputDispatching)]        // client-side, validated by host
-```
+- The primitive it needs doesn't exist yet → extend api/physics/ui to
+  expose it.
+- It's a new foundational concern → consider promoting to top-level.
 
-Same enforcement: composition root only registers patches compatible with
-authority.
+There is no "just this once" exception. The patch surface stays bounded to
+api (observer patches) and L2 mods (their own behavior patches). This forces
+the foundation to be honest about what it exposes.
 
-#### Dev-mode "simulated client"
+### Canonical mod shape
 
-A settings toggle that runs the local instance as if it were a remote client
-(authority = Client, host-only services skipped, client-only paths exercised).
-Catches "I forgot to gate this on host" bugs at dev time without needing a
-second machine.
+A mod can simultaneously be three things, and most are at least two:
 
-#### State sync — when to use what
+1. **Consumer** — subscribes to bus events, queries contracts, reads streams.
+2. **Service provider** — implements a contract from api and registers it
+   for others.
+3. **UI contributor** — registers components into ui-owned surfaces.
 
-- **Game-native data** (CutOut, MU, throttle, reverser, train brake): write
-  through `ControlProperties`; vanilla KVO sync handles propagation. No
-  `IReplicatedState` wrapper needed.
-- **Our extension flags** (DPU enabled, AE smoothing mode, etc.): use
-  `IReplicatedState<T>` — wraps the same KVO mechanism but typed and managed.
-- **Per-mod settings + persisted state**: persistence layer (host-only on
-  save, replicated through host-side application of save data on load).
-- **Local view state** (window position, scroll position, favorite list):
-  client-local, **not** synced. Persist locally if at all.
+ETA is the canonical example of all three: consumer of physics + waypoints,
+provider of `IEta`, contributor to the equipment window.
+
+### Cross-mod relationships
+
+- Mods **never reference each other's assemblies**. All cross-mod talk goes
+  through api contracts, the bus, or streams.
+- **Optional dependencies** — `registry.TryGet<IFoo>()`, gracefully degrade
+  if missing.
+- **Hard dependencies** — declare `requires: [IFoo]` in `info.json`.
+  Composition root refuses to bootstrap if missing.
+
+### Closed-loop control discipline
+
+Any mod that **writes control inputs** (throttle, brake, reverser) must
+**consume the physics streams those inputs affect**. This rule exists
+because v0's AE smoothing exploded a 200-car consist by writing controls
+without reading physics consequences.
+
+Control-modifying mods declare `physics` as a hard dep. Composition root
+enforces. The canonical example is `mods/enginecontrol` — see its README.
 
 ---
 
@@ -478,7 +468,7 @@ second machine.
 ### Layout
 
 ```
-Mods\ca.jwsm.railroader.mods.<mod>\persist\
+Mods\ca.jwsm.railroader.<mod>\persist\
     saves\<saveId>\
         <key>.json
         <key>.json.bak                          ← previous version, atomic-write fallback
@@ -492,7 +482,7 @@ no cross-mod pollution.
 ### Two-tier API
 
 ```csharp
-IPersistenceService                              // L1, lives in api host
+IPersistenceService                              // L1, lives in api
     IPersistenceContext GetContext(string ownerModId, PersistenceScope scope);
 
 IPersistenceContext
@@ -533,12 +523,182 @@ No `World` scope yet — defer until a real use case appears.
 
 ---
 
+## Logging
+
+**Goal**: our codebase's voice clearly audible in its own log file, scope-
+tagged, single chronological timeline, no Player.log noise.
+
+### Contract
+
+```csharp
+ILoggerFactory                                   // registered first thing in composition root
+    ILogger CreateLogger(string scope);          // scope: hierarchical dotted
+
+ILogger
+    void Trace/Debug/Info/Warn/Error(string message, params object[] args);
+    void Coalesce(string key, string message, Severity sev);
+    void CoalesceWarning(string key, string message);
+
+ILogPipeline (internal to factory)
+    LevelFilter (per-scope config)
+    Coalescer (5s dedup window, summary on flush)
+    Sinks: [RotatingFileSink, UmmErrorMirrorSink, OverlaySink (dev), ...]
+```
+
+Every service takes `ILoggerFactory` in its constructor and creates its own
+scoped logger. **No statics.** No global access pattern.
+
+### Scope naming
+
+Hierarchical, dotted, lower-kebab-case:
+
+```
+api.bootstrap
+api.consist-topology              (api observer patch / contract impl)
+physics.coupler-forces
+physics.air                       (physics mod's own scope)
+ui.windows
+ui.theme
+mods.dpu.power-propagation
+mods.eta.calculator
+```
+
+The mod or component owns its prefix exclusively. Filtering with
+`grep '\[mods.dpu' api-*.log` returns *only* the DPU mod's emissions.
+
+### File output
+
+```
+Mods\ca.jwsm.railroader.api\logs\
+    api-2026-04-26-184912.log          ← current run (active write)
+    api-2026-04-26-171533.log          ← previous run
+    ...
+    latest.log                          ← optional hardlink to current
+```
+
+**Rotation rules:**
+
+- ISO-ish timestamp filename (`api-{yyyy-MM-dd-HHmmss}.log`). Natural sort =
+  chronological sort.
+- On startup: enumerate `api-*.log`, sort descending, delete past N.
+  Default `N = 5`. Configurable via mod settings (`maxRetainedLogs`).
+- Files **not matching** `api-*.log` are never touched. Rename to preserve
+  (e.g. `api-bug-report-2026-04-26.log`) — rotation leaves it alone forever.
+- Pattern itself is **not** configurable (would defeat the rename-to-preserve
+  trick).
+
+**Failure handling:**
+
+- Rotation runs in try/catch. Delete failure (locked file, perms) logs a
+  warning *to the new file* and proceeds. Never blocks game startup.
+- File-open failure falls through to UMM logger only. Graceful degradation.
+
+**Convenience:**
+
+- `latest.log` hardlink to active file. Editor pinned to it auto-tails.
+- Errors **also** mirror to UMM logger (Player.log) as a courtesy — anyone
+  glancing at Player.log who sees an exception wants to know which mod faulted.
+  Routine ops/diag logs go to our file alone.
+
+### Coalescer
+
+- Same key + identical message body collapses within a 5-second window.
+- Flush emits "Suppressed N over Xs" summary line — predictable cadence,
+  not ad-hoc.
+- Coalescing is a **pipeline stage**, not a separately-callable utility.
+  `logger.Coalesce(...)` routes through the pipeline like any other emission.
+
+---
+
+## Multiplayer
+
+**Goal**: every service knows its authority, every patch knows its class,
+every mutation goes through a typed primitive. No `StateManager.IsHost`
+sprinkled at call sites.
+
+### Contract
+
+```csharp
+IAuthority                                       // injected into every service
+    bool IsHost { get; }                         // authoritative for simulation
+    bool IsClient { get; }                       // remote follower
+    bool IsLocal { get; }                        // single-player (≈ host)
+    event Action AuthorityChanged;               // hot-swap (host migration)
+
+IReplicatedStateRegistry
+    IReplicatedState<T> Register<T>(string key, T defaultValue);
+
+IReplicatedState<T>
+    T Get(VehicleId vehicleId);
+    void Set(VehicleId vehicleId, T value);     // host-only (or routed)
+    void Observe(VehicleId vehicleId, Action<T> onChange);
+    // syncs via game's KVO under the hood
+
+IRequestRouter
+    Task<TResult> Send<TRequest, TResult>(TRequest request);   // client → host
+    void RegisterHandler<TRequest, TResult>(Func<TRequest, TResult> handler);
+    // host registers; clients invoke; framework handles transport
+```
+
+### Authority class per service
+
+Every service declaration includes its authority requirement:
+
+```csharp
+[ServiceAuthority(AuthorityClass.HostOnly)]
+public sealed class DpuAirSimulation : IDpuAirSimulation { ... }
+
+[ServiceAuthority(AuthorityClass.Both)]
+public sealed class ConsistTopology : IConsistTopology { ... }
+
+[ServiceAuthority(AuthorityClass.ClientOriginated)]
+public sealed class InspectorActions : IInspectorActions { ... }
+// client invokes; routes through IRequestRouter to host; host validates + applies
+```
+
+Composition root reads the attribute; constructs only services compatible
+with current authority. **Host-only service constructed on a client = startup
+error**, not silent runtime weirdness.
+
+### Patch class per patch
+
+```csharp
+[PatchClass(PatchClass.Simulation)]              // host-only
+[PatchClass(PatchClass.View)]                    // both — render-side adjustments
+[PatchClass(PatchClass.InputDispatching)]        // client-side, validated by host
+```
+
+Same enforcement: composition root only registers patches compatible with
+authority. Note that `mods/*` cannot patch at all — this attribute applies to
+api observer patches and L2 mods' own patches only.
+
+### Dev-mode "simulated client"
+
+A settings toggle that runs the local instance as if it were a remote client
+(authority = Client, host-only services skipped, client-only paths exercised).
+Catches "I forgot to gate this on host" bugs at dev time without needing a
+second machine.
+
+### State sync — when to use what
+
+- **Game-native data** (CutOut, MU, throttle, reverser, train brake): write
+  through `ControlProperties`; vanilla KVO sync handles propagation. No
+  `IReplicatedState` wrapper needed.
+- **Our extension flags** (DPU enabled, AE smoothing mode, etc.): use
+  `IReplicatedState<T>` — wraps the same KVO mechanism but typed and managed.
+- **Per-mod settings + persisted state**: persistence layer (host-only on
+  save, replicated through host-side application of save data on load).
+- **Local view state** (window position, scroll position, favorite list):
+  client-local, **not** synced. Persist locally if at all.
+
+---
+
 ## Directionality Contract
 
-`IConsistDirection` (under `IPhysicsState.Direction`) is the **only** legal
-source of truth for direction, orientation, and signed speeds.
+`IConsistDirection` (a contract in api, implemented in `physics`) is the
+**only** legal source of truth for direction, orientation, and signed speeds.
 
-**Forbidden anywhere outside `IPhysicsState` implementation:**
+**Forbidden anywhere outside `physics`'s implementation:**
 
 - Reading `BaseLocomotive.FrontIsA` directly
 - Computing "is forward" from `velocity` sign
@@ -548,13 +708,15 @@ source of truth for direction, orientation, and signed speeds.
 
 ```csharp
 // From a feature mod / UI mod / api consumer:
-float speed = physics.Direction.UnsignedSpeedMph(vehicleId);    // for display
-Sign dir = physics.Direction.DirectionOfTravel(vehicleId);      // for logic
-int orient = physics.Direction.OrientationRelativeToLead(loco); // for fan-out
+var direction = registry.Get<IConsistDirection>();
+float speed   = direction.UnsignedSpeedMph(vehicleId);    // for display
+Sign  dir     = direction.DirectionOfTravel(vehicleId);   // for logic
+int   orient  = direction.OrientationRelativeToLead(loco); // for fan-out
 ```
 
 If `IConsistDirection` doesn't expose what you need, **add a primitive** to
-the interface — don't compute it yourself.
+the interface (in api) and implement it in `physics` — don't compute it
+yourself.
 
 ---
 
@@ -562,11 +724,13 @@ the interface — don't compute it yourself.
 
 ### Where patches live
 
-| Patch type            | Lives in       | Reviewed against            |
-|-----------------------|----------------|------------------------------|
-| Observer / KVO mirror | api/host       | "exposes data, changes nothing" |
-| Behavior modification | feature mod    | "specific feature, gated by mod presence" |
-| Cross-cutting hooks   | api/host       | Must be opt-in by feature mods via service interfaces |
+| Patch type            | Lives in       | Reviewed against                          |
+|-----------------------|----------------|-------------------------------------------|
+| Observer / KVO mirror | api            | "exposes data, changes nothing"           |
+| Behavior modification | physics        | "additive to vanilla, deliberate"         |
+| Cross-cutting hooks   | api            | Must be opt-in by feature mods via contracts |
+| Game UI modification  | **forbidden**  | We never touch vanilla UI prefabs         |
+| Anything in `mods/*`  | **forbidden**  | If you need a patch, the foundation needs to expose a primitive |
 
 ### Static handoff pattern
 
@@ -574,13 +738,13 @@ Patches are static (Harmony requirement). To reach injected services, use
 the established pattern:
 
 ```csharp
-// api/host/Patches/SomeFeaturePatchState.cs
+// api/Patches/SomeFeaturePatchState.cs
 internal static class SomeFeaturePatchState
 {
     internal static IServiceX Service;  // set by composition root
 }
 
-// api/host/Patches/SomeFeaturePatch.cs
+// api/Patches/SomeFeaturePatch.cs
 [HarmonyPatch(typeof(GameType), "Method")]
 internal static class SomeFeaturePatch
 {
@@ -593,10 +757,10 @@ internal static class SomeFeaturePatch
     }
 }
 
-// host/Bootstrap/HostCompositionRoot.cs
+// api/Bootstrap/CompositionRoot.cs
 SomeFeaturePatchState.Service = serviceX;
 
-// host/Bootstrap/HostPatchState.cs (Reset on save unload)
+// api/Bootstrap/PatchState.cs (Reset on save unload)
 SomeFeaturePatchState.Service = null;
 ```
 
@@ -607,7 +771,7 @@ Patches declare their class via attribute:
 ```csharp
 [PatchClass(PatchClass.Simulation)]              // host-only — simulation patch
 [HarmonyPatch(typeof(LocomotiveAirSystem), "UpdateAir")]
-internal static class DpuAirPatch { ... }
+internal static class CouplerForceObserverPatch { ... }
 ```
 
 Composition root only registers patches compatible with current authority.
@@ -616,30 +780,43 @@ Composition root only registers patches compatible with current authority.
 
 ## Service Ownership Inventory
 
-| Service                   | Layer | Authority         | Owner mod                              |
-|---------------------------|-------|-------------------|----------------------------------------|
-| ILoggerFactory            | L1    | Both              | api host                               |
-| IAuthority                | L1    | Both              | api host                               |
-| IPersistenceService       | L1    | Host (writes)     | api host                               |
-| IReplicatedStateRegistry  | L1    | Both              | api host                               |
-| IRequestRouter            | L1    | Both (asymmetric) | api host                               |
-| IPhysicsState             | L2    | Both              | api host                               |
-| IConsistTopology          | L3    | Both              | api host (via IPhysicsState)           |
-| IConsistDirection         | L3    | Both              | api host (via IPhysicsState)           |
-| IKinematics, IAirState... | L3    | Both              | api host (via IPhysicsState)           |
-| IControlRequest           | L3    | Host              | api host                               |
-| IVehicleInspector         | L3    | Both              | api host                               |
-| IEquipment                | L3    | Both              | api host                               |
-| IWindowService            | L4    | Client (view)     | ca.jwsm.railroader.ui                  |
-| IBottomBarService         | L4    | Client            | ca.jwsm.railroader.ui                  |
-| IThemeService             | L4    | Client            | ca.jwsm.railroader.ui                  |
-| IDpuService               | L5    | Both              | mods.dpu                               |
-| IAeSmoothingController    | L5    | Host              | mods.ae                                |
-| IWaypointNavigation       | L5    | Both              | mods.eta                               |
-| (UI windows / parts)      | L5    | Client            | mods.ui                                |
+Contracts always live in **api**. The "Owner" column below is the
+implementer / provider.
 
-This table is the **canonical answer** for "who owns what." Adding a new
-service requires updating this table.
+| Contract                  | Layer | Authority         | Implemented in                |
+|---------------------------|-------|-------------------|--------------------------------|
+| ILoggerFactory            | L1    | Both              | api (kernel)                  |
+| IAuthority                | L1    | Both              | api (kernel)                  |
+| IEventBus                 | L1    | Both              | api (kernel)                  |
+| IServiceRegistry          | L1    | Both              | api (kernel)                  |
+| ICommandRegistry          | L1    | Both              | api (kernel)                  |
+| IPersistenceService       | L1    | Host (writes)     | api (kernel)                  |
+| IReplicatedStateRegistry  | L1    | Both              | api (kernel)                  |
+| IRequestRouter            | L1    | Both (asymmetric) | api (kernel)                  |
+| ICouplerForces            | L1    | Both              | physics                       |
+| IKinematics               | L1    | Both              | physics                       |
+| IAirState                 | L1    | Both              | physics                       |
+| IPowerState               | L1    | Both              | physics                       |
+| IMassModel                | L1    | Both              | physics                       |
+| ITrackProfile             | L1    | Both              | physics                       |
+| IConsistTopology          | L1    | Both              | physics                       |
+| IConsistDirection         | L1    | Both              | physics                       |
+| IControlRequest           | L1    | Host              | api (kernel) or physics — TBD |
+| IWindowService            | L1    | Client (view)     | ui                            |
+| IBottomBarService         | L1    | Client            | ui                            |
+| IThemeService             | L1    | Client            | ui                            |
+| IAssetService             | L1    | Client            | ui                            |
+| ISurfaceRegistry          | L1    | Client            | ui                            |
+| IEta                      | L1    | Both              | mods/eta                      |
+| IDurability               | L1    | Both              | mods/durability               |
+| IEngineControl            | L1    | Both              | mods/enginecontrol            |
+| IDispatch                 | L1    | Both              | mods/dispatch                 |
+| IMapModRegistry           | L1    | Both              | mods/mapmodloader             |
+| IEditorSession            | L1    | Both              | mods/editor                   |
+| IWebChannel               | L1    | Both              | mods/webview                  |
+
+This table is the **canonical answer** for "who implements what." Adding a
+new contract requires updating this table.
 
 ---
 
@@ -650,17 +827,17 @@ back-edits to a prior one.
 
 | Phase | Mining targets (ILSPY) | Output |
 |-------|------------------------|--------|
-| **0. Bootstrap** | UMM lifecycle, Railloader status, Harmony patterns | Skeleton repos with composition root + service registry + ILoggerFactory + IAuthority |
+| **0. Bootstrap** | UMM lifecycle, Railloader status, Harmony patterns | api kernel: composition root + mod lifecycle + ILoggerFactory + IAuthority + IEventBus + IServiceRegistry + ICommandRegistry |
 | **1. Persistence + save lifecycle** | StateManager, save messages, mod data conventions | IPersistenceService with two-tier API + atomic write |
-| **2. Physics — kinematics + topology** | Car, BaseLocomotive, EnumerateCoupled, FrontIsA | IConsistTopology, IConsistDirection, IKinematics |
+| **2. Physics — kinematics + topology** | Car, BaseLocomotive, EnumerateCoupled, FrontIsA | physics mod scaffolding; IConsistTopology, IConsistDirection, IKinematics |
 | **3. Physics — air + power** | LocomotiveAirSystem, BrakeLine, VentedValve, AirConnection, ControlProperties | IAirState, IPowerState, IControlRequest |
-| **4. Physics — track + mass** | Graph, Segment, LocationF, speed limits, mileposts | ITrackProfile, IMassModel |
+| **4. Physics — track + mass + couplers** | Graph, Segment, LocationF, speed limits, mileposts, in-train forces | ITrackProfile, IMassModel, ICouplerForces (the closed-loop substrate) |
 | **5. Multiplayer primitives** | KVO sync, PlayerPropertiesManager, Messenger | IReplicatedStateRegistry, IRequestRouter — first migration uses these |
-| **6. UI framework** | UIPanelBuilder, CarInspector (shape ref) | ca.jwsm.railroader.ui peer with windows/parts/theme |
-| **7. First feature mod (DPU)** | MultipleUnitController, MU/CutOut interaction | mods.dpu — air patch + power propagation, consuming primitives |
+| **6. UI framework** | UI Toolkit basics (we DON'T mine game prefabs — we build our own) | ui mod: IWindowService, IThemeService, IAssetService, ISurfaceRegistry, theme.uss, our own surfaces |
+| **7. First feature mod** | (consumes phases 1-6) | Pick one — mods/eta is a strong candidate (multi-role, exercises all three role types) |
 | **8. AE primitives** | AutoEngineerPlanner, AutoEngineerPersistence | Read access to AE intent + interception via IControlRequest |
-| **9. AE smoothing mod** | (consumes phases 1-4, 8) | mods.ae — smoothing controller with anticipatory braking + power |
-| **10+** | (consumes whatever) | ETA, Equipment window, Inspector window, NPC, Dispatch, etc. |
+| **9. mods/enginecontrol** | (consumes phases 1-4, 8) | DPU + dynamic brake + AE smoothing — canonical closed-loop example |
+| **10+** | (consumes whatever) | mods/dispatch, mods/durability, mods/editor, mods/mapmodloader, mods/webview + web client, mods/console, NPC, etc. |
 
 Each phase **stops, ships, and is reviewed** before the next starts. No
 "phase 6 partly done while we start phase 7."
@@ -669,23 +846,21 @@ Each phase **stops, ships, and is reviewed** before the next starts. No
 
 ## Naming Conventions
 
-### Repos
+### Repo
 
-```
-ca.jwsm.railroader.api          — L1-L3 foundation + primitives + composition root
-ca.jwsm.railroader.ui           — L4 UI framework (peer of api)
-ca.jwsm.railroader.mods\<mod>   — L5 feature/UI consumer mods, one folder each
-```
+Single monorepo: `excron/ca.jwsm.railroader`. Top-level peers per the
+workspace layout above.
 
 ### Namespaces
 
 ```
-Ca.Jwsm.Railroader.Api.Host.*               — host implementation
-Ca.Jwsm.Railroader.Api.<Domain>.Contracts   — interfaces
-Ca.Jwsm.Railroader.Api.<Domain>.Models      — value types / snapshots
-Ca.Jwsm.Railroader.Ui.Abstractions.*        — UI framework contracts
-Ca.Jwsm.Railroader.Ui.Runtime.*             — UI framework impl
+Ca.Jwsm.Railroader.Api.*                    — api kernel impl + observer patches
+Ca.Jwsm.Railroader.Api.<Domain>.Contracts   — interfaces (in api project)
+Ca.Jwsm.Railroader.Api.<Domain>.Models      — value types / snapshots (in api project)
+Ca.Jwsm.Railroader.Physics.*                — physics mod impl
+Ca.Jwsm.Railroader.Ui.*                     — ui mod impl
 Ca.Jwsm.Railroader.Mods.<Mod>.*             — feature mods
+Ca.Jwsm.Railroader.Web.*                    — browser client (separate runtime)
 ```
 
 ### Logging scope names
@@ -693,10 +868,11 @@ Ca.Jwsm.Railroader.Mods.<Mod>.*             — feature mods
 Hierarchical, dotted, lower-kebab-case:
 
 ```
-api.host.<service-name>          (e.g. api.host.consist-topology)
-api.host.patches.<patch-name>    (e.g. api.host.patches.dpu-air)
-mods.<mod>.<feature>             (e.g. mods.dpu.power-propagation)
+api.<service-name>               (e.g. api.consist-topology)
+api.patches.<patch-name>         (e.g. api.patches.couplerforce-observer)
+physics.<feature>                (e.g. physics.coupler-forces, physics.air)
 ui.<framework-component>         (e.g. ui.windows, ui.theme)
+mods.<mod>.<feature>             (e.g. mods.enginecontrol.smoothing)
 ```
 
 ### File extensions
@@ -712,8 +888,8 @@ ui.<framework-component>         (e.g. ui.windows, ui.theme)
 Match the scope of the emitting logger; suffix with the event name:
 
 ```csharp
-logger.Coalesce("lead-fallback", message);    // emitted under api.host.consist-topology scope
-// → grep '\[api.host.consist-topology\]' for that scope; coalescer key inside
+logger.Coalesce("lead-fallback", message);    // emitted under api.consist-topology scope
+// → grep '\[api.consist-topology\]' for that scope; coalescer key inside
 ```
 
 ---
@@ -725,7 +901,7 @@ Same patterns as v0 (these worked):
 - `dotnet build` per project; `Directory.Build.props` for shared MSBuild.
 - `GameDir` env var or fallback path resolves game assemblies.
 - Single PowerShell deploy script that builds + copies to game `Mods/` dir.
-- Per-mod include flags (`-IncludeUi`, `-IncludeUiManager`, etc.).
+- Per-mod include flags (`-IncludeUi`, `-IncludePhysics`, etc.).
 
 Document deploy script as part of phase 0 setup; mods plug into it as added.
 
@@ -733,13 +909,19 @@ Document deploy script as part of phase 0 setup; mods plug into it as added.
 
 ## Versioning
 
-- API host has a SemVer version (`ApiVersion(major, minor, patch)`).
-- Consumer mods declare their **min required api version** in `info.json`.
-- Composition root rejects mods with incompatible api version at startup.
-- Within a major version, contracts are additive (can add interfaces /
-  methods, can't remove or change signatures).
-- Cross-major changes require explicit migration path documented per breaking
-  change.
+The monorepo means contracts and consumers move in lockstep — no
+inter-project version skew is possible within our own stack. Versioning
+becomes important only at two boundaries:
+
+- **api kernel version** (`ApiVersion(major, minor, patch)`) — declared so
+  any future foreign UMM mods that consume our contracts can validate.
+  Within a major version, contracts are additive.
+- **Per-mod `info.json`** — declares mod identity, hard deps
+  (`requires: [IFoo]`), and any other manifest metadata. The composition
+  root uses this for bootstrap validation.
+
+Cross-major changes require explicit migration path documented per breaking
+change.
 
 ---
 
@@ -752,8 +934,14 @@ These deferred decisions need an answer before the relevant phase starts:
   Decide in phase 2.
 - [ ] **Replicated state transport**: KVO for everything, or do we need our
   own RPC channel for non-KVO data? Decide in phase 5.
-- [ ] **In-game log viewer**: phase or feature? Probably a phase 10+
-  feature mod (`mods.devconsole`).
+- [ ] **UI contribution shape**: declarative widget tree, typed contribution
+  interfaces per surface, or hybrid? Decide in phase 6.
+- [ ] **In-game console UX**: where does our slash-command input live?
+  Are we shipping our own console window in `mods/console`, or piggybacking
+  on something? (Note: we don't modify the game's console.) Phase 6-7.
+- [ ] **Physics intervention model**: observation-only with better math, or
+  selective intervention via `ControlProperties`? Where's the line? Decide
+  in phase 3-4.
 - [ ] **AE smoothing UX**: notch sensitivity, jerk profile, reaction-time
   knob — what's exposed in mod settings? Decide in phase 9.
 - [ ] **Save migration**: legacy v0 mod data — readable from v1, ignore
@@ -763,13 +951,33 @@ These deferred decisions need an answer before the relevant phase starts:
 
 ## Glossary
 
-- **api / api host**: `ca.jwsm.railroader.api`. The foundation repo with
-  L1-L3 primitives + composition root + observer patches.
-- **ui / ui framework**: `ca.jwsm.railroader.ui`. Peer of api; windowing /
-  theming / part registry.
-- **mod / feature mod / consumer mod**: `ca.jwsm.railroader.mods\<name>`.
-  Anything in L5 — features and UI consumers alike.
-- **primitive**: A typed surface in L1-L3 that exposes either game state or
+- **api / api kernel**: `ca.jwsm.railroader.api`. The L1 controller —
+  composition root, foundation services, all cross-mod contracts, observer
+  patches. Stays thin and coherent.
+- **physics**: `ca.jwsm.railroader.physics`. Required-foundational mod (L2).
+  Provides physics ground truth additively to vanilla.
+- **ui**: `ca.jwsm.railroader.ui`. Required-foundational mod (L2). Provides
+  windowing framework, theme, assets. Owns its own UI surfaces; never
+  modifies vanilla UI.
+- **web**: `ca.jwsm.railroader.web`. Browser-based map viewer client.
+  Different runtime — not a UMM mod, not Harmony-patched. Talks to
+  `mods/webview` over WebSocket.
+- **mod / feature mod**: `ca.jwsm.railroader.mods/<name>`. L3. Anything in
+  `mods/*` — features, UI contributors, command sources.
+- **required-foundational mod**: An L2 mod (`physics`, `ui`) that the
+  composition root warns or refuses to bootstrap dependents without.
+- **canonical mod shape**: A mod can simultaneously be three things —
+  consumer (subscribes to bus / streams / contracts), service provider
+  (implements an api contract), UI contributor (registers components into
+  ui-owned surfaces). Most mods are at least two.
+- **closed-loop control**: Discipline rule — mods that write control inputs
+  (throttle, brake) must consume the physics streams those inputs affect.
+  Enforced via manifest-declared `requires`. Originating incident: v0 AE
+  smoothing exploded a 200-car consist's couplers.
+- **contribution model**: Mods don't own UI windows. ui owns surfaces;
+  mods register components against named surfaces (Equipment column, HUD
+  overlay, etc.). Theme drift and asset duplication die structurally.
+- **primitive**: A typed contract in api that exposes either game state or
   framework capability. "Primitive" because it composes upward; mods build
   on primitives.
 - **lead candidate**: The locomotive in a consist with all of CutOut/MU/DPU
@@ -781,3 +989,8 @@ These deferred decisions need an answer before the relevant phase starts:
   invalidates each frame, hits within a frame.
 - **fingerprint short-circuit**: Computing a cheap hash of structural state
   to skip work when nothing relevant changed.
+- **the web exception**: The narrow break from the in-process bus/stream
+  model — `mods/webview` publishes a WebSocket consumed by the browser
+  client, because event-tick cadence renders jerkily for moving entities.
+  Scoped to the browser-process boundary; in-process consumers still use
+  the bus.

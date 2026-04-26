@@ -8,7 +8,13 @@
 - **Theme system** — USS, color tokens, typography, spacing scale (`IThemeService`).
 - **Assets** — fonts, icons, sprites, stylesheets — all visual resources (`IAssetService`).
 - **Surface registry** — the contribution-point machinery mods bind into.
-- **Patches that modify game UI** to host our surfaces (bottom bar injection, CarInspector additions, etc.).
+- **Our own UI surfaces** — our-own-bottom-bar, our-own-toolbars, our own windows. Self-contained, parallel to the game's UI.
+
+## No vanilla UI modification
+
+We do **not** modify game UI prefabs (CarInspector, the game's bottom bar, dialogs, etc.). v0 tried injecting our controls into game windows and it was fragile — layout changes, prefab updates, and Unity UI Toolkit edge cases all broke our injections.
+
+v1 builds a self-contained UI ecosystem. Less elegant initially (no "feels native" integration with game windows), vastly more robust. The ui mod has **no Harmony patches** — any game-state observation it needs comes through api's observer patches as bus events.
 
 ## Mods contribute, never render directly
 
