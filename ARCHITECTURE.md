@@ -519,12 +519,35 @@ Power-user tier opts out: mods using SQLite/etc. handle their own atomicity.
 
 ### Scopes
 
-- `Save` — tied to current game save. Orphaned when save is deleted (we don't
-  auto-clean; player can wipe by hand).
+- `Save` — tied to current game save. **Auto-cleaned** when the corresponding
+  game save no longer exists (see *Save-scope cleanup* below). Player never
+  has to wipe by hand.
 - `Global` — per-install, shared across saves. Mod settings, install-level
-  caches.
+  caches. Never auto-cleaned.
 
 No `World` scope yet — defer until a real use case appears.
+
+### Save-scope cleanup
+
+Day-one behavior: orphaned save-scoped data is removed automatically. A mod
+shouldn't accumulate gigabytes of dead data because the player deleted a
+campaign three months ago.
+
+**Mechanism (api kernel responsibility):**
+
+- On bootstrap, the persistence service enumerates each mod's `saves/`
+  directory and cross-references the game's current save manifest.
+- Any `saves/<saveId>/` folder whose `<saveId>` is not in the game's save
+  list is deleted (recursive, including `.bak` and `.tmp` files).
+- Cleanup runs in try/catch; failures log a warning and proceed. Never
+  blocks game startup.
+- Cleanup is **proactive on startup**, not reactive to save-deletion events
+  (player may delete saves outside the game; we can't always observe).
+
+If a save-deletion event is exposed by the game, the persistence service
+also reacts to it — but startup scan is the source of truth, not the event.
+
+Mods don't opt in or out. Auto-cleanup is unconditional for `Save` scope.
 
 ### File extension
 
