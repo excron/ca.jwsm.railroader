@@ -1,0 +1,106 @@
+/*
+ * theme-base — structural styling for experiment widgets.
+ *
+ * Selectors target our class names; values come from the active theme's
+ * variables (see charcoal.uss). All visual properties consume var() — no
+ * hardcoded colors here, so swapping the theme class on the root element
+ * re-themes the entire tree.
+ *
+ * If you need a value that isn't a token, add it to every theme's variable
+ * set rather than hardcoding it here.
+ */
+
+/* ---------- containers ---------- */
+
+.window {
+    background-color: var(--panel);
+    border-color: var(--border);
+    border-width: 1px;
+    border-radius: 8px;
+    padding: 8px;
+}
+
+.window-titlebar {
+    background-color: var(--titlebar-accent);
+    color: var(--text-primary);
+    -unity-font-style: bold;
+    font-size: 16px;
+    padding: 4px 8px;
+    margin-bottom: 8px;
+    border-radius: 4px;
+}
+
+.panel-stripe {
+    background-color: var(--panel-stripe);
+    padding: 4px 8px;
+    border-radius: 4px;
+}
+
+/* ---------- text ---------- */
+
+.text-primary {
+    color: var(--text-primary);
+}
+
+.text-muted {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.text-success { color: var(--success); }
+.text-warning { color: var(--warning); }
+.text-danger  { color: var(--danger); }
+
+/* ---------- buttons ---------- */
+
+.button {
+    background-color: var(--panel-stripe);
+    color: var(--text-primary);
+    border-color: var(--border);
+    border-width: 1px;
+    border-radius: 4px;
+    padding: 4px 12px;
+}
+
+.button:hover {
+    background-color: var(--accent);
+    border-color: var(--accent);
+}
+
+.button.primary {
+    background-color: var(--accent);
+    border-color: var(--accent);
+}
+
+.button.primary:hover {
+    background-color: var(--accent-hover);
+    border-color: var(--accent-hover);
+}
+
+/* ---------- slider (anatomy mirroring vanilla's pattern) ---------- */
+
+.slider-track {
+    background-color: var(--panel-stripe);
+    height: 4px;
+    border-radius: 2px;
+}
+
+.slider-fill {
+    background-color: var(--accent);
+    border-radius: 2px;
+}
+
+.slider-handle {
+    background-color: var(--text-primary);
+    width: 16px;
+    height: 16px;
+    border-radius: 8px;
+    border-color: var(--accent);
+    border-width: 2px;
+}
+
+.slider-label {
+    color: var(--text-primary);
+    font-size: 12px;
+    margin-top: 2px;
+}

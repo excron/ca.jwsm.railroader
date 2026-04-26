@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyName>ca.jwsm.railroader.experiments.ui-toolkit-hud</AssemblyName>
+    <RootNamespace>Ca.Jwsm.Railroader.Experiments.UiToolkitHud</RootNamespace>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+  </PropertyGroup>
+
+  <!--
+    Clean-room: this experiment references Unity + UMM + Harmony only.
+    No reference to api / world / physics / ui / mods.* — that's the point.
+    When findings migrate to production, they land in ca.jwsm.railroader.ui
+    cleanly, not as a code lift.
+  -->
+
+  <ItemGroup>
+    <Reference Include="UnityEngine">
+      <HintPath>$(ManagedDir)\UnityEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(ManagedDir)\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UIElementsModule">
+      <HintPath>$(ManagedDir)\UnityEngine.UIElementsModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AssetBundleModule">
+      <HintPath>$(ManagedDir)\UnityEngine.AssetBundleModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityModManager">
+      <HintPath>$(UmmDir)\UnityModManager.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(UmmDir)\0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

@@ -174,6 +174,7 @@ C:\Users\jsm12\OneDrive\Documents\Game_Projects\
     ├── ca.jwsm.railroader.physics\          ← required-foundational mod (forces, slack, kinematics)
     ├── ca.jwsm.railroader.ui\               ← required-foundational mod (windows, theme, assets-as-UI)
     ├── ca.jwsm.railroader.web\              ← browser client (different runtime)
+    ├── ca.jwsm.railroader.experiments\      ← clean-room targeted probes (dev-only, never ships)
     └── ca.jwsm.railroader.mods\             ← feature + UI-contributor mods
         ├── console\
         ├── dispatch\
@@ -385,6 +386,67 @@ by `mods/webview`. WebSocket exists because event-tick cadence renders
 jerkily for moving entities in a browser; continuous streaming gives sub-tick
 interpolation. This is a documented narrow break, **scoped to the browser-
 process boundary**. In-process consumers still use the bus and streams.
+
+---
+
+## Experiments
+
+`ca.jwsm.railroader.experiments/` is a sandbox for clean-room targeted
+probes. Each subfolder answers a specific feasibility question without
+dragging the production stack into the unknown.
+
+### Discipline (loose by default, strict where it matters)
+
+Experiments are deliberately loose — they exist to learn fast:
+
+- ✅ Can use any tech, skip kernel primitives, patch directly
+- ✅ Can ship "good enough" with no tests
+- ✅ Can stop without graduating to production code
+
+But the **moral** rules still apply — these don't bend even in experiments:
+
+- ❌ No vanilla UI prefab modification (replacement via suppression is fine)
+- ❌ No vanilla asset distribution
+- ❌ Never enter the production deploy path (don't end up in player Mods/ folders)
+
+### Shape adherence
+
+Experiments **adhere to production shape** when they touch areas we've
+designed for the main stack. This makes findings transfer cleanly to the
+main stack without architecture mismatches:
+
+- Themes go in `Themes/` as **source files** (USS for UI Toolkit experiments)
+- Assets go in `Assets/`
+- Folder layout mirrors what the production mod would look like
+- Naming follows main-stack conventions
+- No inline styling — all visual identity lives in theme files
+
+A "shape-respecting" experiment teaches us patterns that work *in our system*,
+not patterns that work *somewhere else*. The small overhead pays for itself
+when findings migrate to production.
+
+### Lifecycle
+
+1. **Question** — README states what we're trying to learn
+2. **Build** — minimal scaffold to answer it
+3. **Observe** — what worked? what didn't? gotchas? perf? feel?
+4. **Decide** — works → migrate **insights** (not code) into main-stack
+   design; doesn't → document why and either delete or freeze as a
+   "we tried this" artifact
+5. **Cleanup** — delete the folder, or leave with a status note
+
+The experiment's **code itself never gets promoted** to production.
+Production code is rewritten cleanly, informed by what the experiment
+proved possible. Same posture as our "no copy-paste from v0" rule.
+
+### Layout
+
+Each experiment is a self-contained folder under `experiments/` with its
+own `csproj`, `info.json`, `Themes/`, `Assets/`, and `src/`. Builds
+independently, deploys independently (to a dev install, not production),
+deletes independently.
+
+See `ca.jwsm.railroader.experiments/README.md` for the full convention.
 
 ---
 

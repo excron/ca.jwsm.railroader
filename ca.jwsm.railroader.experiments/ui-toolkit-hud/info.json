@@ -1,0 +1,9 @@
+{
+  "Id": "ca.jwsm.railroader.experiments.ui-toolkit-hud",
+  "DisplayName": "Experiment: UI Toolkit HUD",
+  "Author": "Josh St. Marie",
+  "Version": "0.0.1.0",
+  "ManagerVersion": "0.27.0",
+  "AssemblyName": "ca.jwsm.railroader.experiments.ui-toolkit-hud.dll",
+  "EntryMethod": "Ca.Jwsm.Railroader.Experiments.UiToolkitHud.ExperimentEntry.Load"
+}
