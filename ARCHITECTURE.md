@@ -170,8 +170,9 @@ C:\Users\jsm12\OneDrive\Documents\Game_Projects\
 └── Railroader\                              ← v1 monorepo
     ├── ARCHITECTURE.md                      ← this doc
     ├── ca.jwsm.railroader.api\              ← kernel (controller)
-    ├── ca.jwsm.railroader.physics\          ← required-foundational mod
-    ├── ca.jwsm.railroader.ui\               ← required-foundational mod
+    ├── ca.jwsm.railroader.world\            ← required-foundational mod (track, assets, environment)
+    ├── ca.jwsm.railroader.physics\          ← required-foundational mod (forces, slack, kinematics)
+    ├── ca.jwsm.railroader.ui\               ← required-foundational mod (windows, theme, assets-as-UI)
     ├── ca.jwsm.railroader.web\              ← browser client (different runtime)
     └── ca.jwsm.railroader.mods\             ← feature + UI-contributor mods
         ├── console\
@@ -217,13 +218,18 @@ L1  api kernel                               ca.jwsm.railroader.api
        observer patches.
        ▲
        │
-L2  Required-foundational mods               ca.jwsm.railroader.physics
-       Implementations of L1 contracts       ca.jwsm.railroader.ui
-       that the system can't function
+L2  Required-foundational mods               ca.jwsm.railroader.world
+       Implementations of L1 contracts       ca.jwsm.railroader.physics
+       that the system can't function        ca.jwsm.railroader.ui
        without. Each may patch as needed
        to do its job. Composition root
        refuses to bootstrap dependents
        without them registered.
+
+       L2 mods may depend on each other
+       acyclically: physics depends on
+       world (graph/location math); ui
+       stands alone; world stands alone.
        ▲
        │
 L3  Feature mods                             ca.jwsm.railroader.mods\*
@@ -516,6 +522,26 @@ Required-foundational mods sit at L2. The composition root warns or refuses
 to bootstrap dependents without them registered. Each is heavy enough that
 it doesn't belong inside the api kernel, and load-bearing enough that the
 system can't function without it.
+
+L2 mods may depend on each other acyclically. Current: `physics` depends on
+`world` (for graph + location math); `ui` and `world` stand alone.
+
+### `world` — track, assets, environment
+
+Owns the world domain — vanilla's `Graph` + `PrefabStore` wrapped in typed
+contracts, plus environment state (time, future weather), plus granular
+world-load orchestration hooks that mods like `mapmodloader` need.
+
+- **Implements** world contracts defined in api: `IWorldGraph`,
+  `IAssetCatalog`, `IAssetPackRegistration`, `ILocationMath`,
+  `ITrackProfile`, `IWorldTime`, `IWorldLoad`. (Some are placeholders;
+  firmed up when first consumer needs them.)
+- **Subscribes** to api's observer-patch events for granular world-load
+  moments (`GraphAboutToInitialize`, `PrefabStoreInitialized`,
+  `OpsAboutToInitialize`) and re-exposes them as typed `IWorldLoad` events.
+- **May patch** vanilla world code (e.g., a future prefix patch on
+  `Graph.RebuildCollections` if we ever measure layer-1 graph caching as
+  worth the risk — that patch lives here, not in physics).
 
 ### `physics` — physics ground truth
 
@@ -1300,9 +1326,15 @@ implementer / provider.
 | IAirState                 | L1    | Both              | physics                       |
 | IPowerState               | L1    | Both              | physics                       |
 | IMassModel                | L1    | Both              | physics                       |
-| ITrackProfile             | L1    | Both              | physics                       |
 | IConsistTopology          | L1    | Both              | physics                       |
 | IConsistDirection         | L1    | Both              | physics                       |
+| IWorldGraph               | L1    | Both              | world                         |
+| IAssetCatalog             | L1    | Both              | world                         |
+| IAssetPackRegistration    | L1    | Both              | world                         |
+| ILocationMath             | L1    | Both              | world                         |
+| ITrackProfile             | L1    | Both              | world                         |
+| IWorldTime                | L1    | Both              | world                         |
+| IWorldLoad                | L1    | Both              | world                         |
 | IControlRequest           | L1    | Host              | api (kernel) or physics — TBD |
 | IWindowService            | L1    | Client (view)     | ui                            |
 | IBottomBarService         | L1    | Client            | ui                            |

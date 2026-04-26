@@ -107,12 +107,12 @@ UI shows progress via `ui.RunWithProgress("Loading 3 maps…", task)`. Continuat
 
 ## Hard rule: no Harmony patches in this mod
 
-`mods/*` cannot Harmony-patch (per project discipline). The vanilla injection points for "intercept Graph init" / "register AssetPack before first lookup" / "inject before OPS init" are owned by `physics` (or a small new L2 world-orchestration mod if physics doesn't fit). This loader consumes those hooks via api contracts; it never patches.
+`mods/*` cannot Harmony-patch (per project discipline). The vanilla injection points — graph init, prefab-store init, ops init — are exposed by **`world`** (the foundational mod that owns the world domain). This loader subscribes to typed `IWorldLoad` events from world and registers asset packs via `IAssetPackRegistration`. No patches in this mod.
 
 ## Depends on
 
-- `IGameLifecycle`, `ICacheService`, `IBackgroundExecutor`, `IMainThreadDispatcher`, `IServiceRegistry`, `IPersistenceService`, `IAuthority` (for save-time mod-set recording) — all from api kernel.
-- The world-patch hook contracts implemented by `physics` (or the L2 orchestration mod that ends up owning them).
+- **api kernel:** `IGameLifecycle`, `ICacheService`, `IBackgroundExecutor`, `IMainThreadDispatcher`, `IServiceRegistry`, `IPersistenceService`, `IAuthority` (for save-time mod-set recording).
+- **world:** `IWorldLoad` (granular world-load events), `IAssetPackRegistration` (register mod-shipped asset packs), `IWorldGraph` (verify content after injection).
 
 ## Notable consumers
 
