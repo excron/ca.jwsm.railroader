@@ -1,0 +1,41 @@
+<Project>
+
+  <!--
+    Monorepo-wide MSBuild defaults. Every csproj under Railroader/ inherits these.
+
+    Common patterns each project gets for free:
+      - net48 target framework (Unity 2022.3 fully supports this; vanilla DLLs are
+        compatible)
+      - Latest C# language features
+      - Shared paths to the game's Managed/ folder so References resolve uniformly
+      - Build output without TargetFramework subdirectory (cleaner deploy paths)
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Deterministic>true</Deterministic>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <Configurations>Debug;Release</Configurations>
+  </PropertyGroup>
+
+  <!--
+    Game install location. Can be overridden by setting GAME_DIR in the
+    environment before invoking MSBuild, e.g.:
+        $env:GAME_DIR = "D:\Games\Railroader"
+        dotnet build
+
+    Default: a known-good Steam library path. Adjust GameDirFallback below
+    if the game lives somewhere else by default on this machine.
+  -->
+  <PropertyGroup>
+    <GameDirFallback Condition="'$(GameDirFallback)'==''">D:\SteamLibrary\steamapps\common\Railroader</GameDirFallback>
+    <GameDir Condition="'$(GAME_DIR)'!=''">$(GAME_DIR)</GameDir>
+    <GameDir Condition="'$(GAME_DIR)'=='' and '$(GameDir)'==''">$(GameDirFallback)</GameDir>
+    <ManagedDir>$(GameDir)\Railroader_Data\Managed</ManagedDir>
+    <UmmDir>$(ManagedDir)\UnityModManager</UmmDir>
+  </PropertyGroup>
+
+</Project>
