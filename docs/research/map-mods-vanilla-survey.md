@@ -226,10 +226,15 @@ If a map mod is uninstalled or its content changes between sessions:
 
 ## Asset packaging conventions
 
-A map mod ships as a folder under `Mods/`:
+A map mod ships as a folder under `Maps/` (a new top-level folder peer to
+the game's `Mods/`, owned by our loader). RL's old approach put map mods
+in `Mods/` and had RailLoader scan that folder while UMM also scanned it
+ignoring map mods — bidirectional wasted I/O. Separate folder = each
+loader scans only what it owns. See `mods/mapmodloader/README.md` for
+the full convention.
 
 ```
-MyMapMod/
+<game install>/Maps/MyMapMod/
 ├─ manifest.json           ← metadata, deps, contributions
 ├─ definitions/
 │  ├─ graph.json          ← tracks.{nodes,segments,spans}
