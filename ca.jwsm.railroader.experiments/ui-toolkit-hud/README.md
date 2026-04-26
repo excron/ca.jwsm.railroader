@@ -2,75 +2,88 @@
 
 ## The question
 
-**Is UI Toolkit + USS the right tech for the bulk of our UI work** (panels, windows, controls, themed components)?
+**Is UI Toolkit + programmatic layout the right tech for the bulk of our UI work** — specifically the HUD and Inspector that gave us the most pain in v0?
 
-Original consideration was uGUI (Canvas-based, prefab-heavy) because vanilla uses it and the WYSIWYG editor is mature. But:
+Approach: **Path 3** (programmatic styling with JSON theme tokens). Themes live in `Themes/<name>.json` as data; layout and styling get applied in C# via `IStyle` setters. No USS authoring, no Unity authoring project, no AssetBundles — the experiment compiles via `dotnet build` alone and deploys as a UMM mod.
 
-- Author has CSS background → USS is comfortable territory
-- v0 had documented UI Toolkit pain (the `MouseDownEvent` picking-mode quirk), but the workaround is well-known and one line per element
-- Code-driven authoring + USS hot-reloading = much faster iteration than the prefab loop
+The CSS-comfortable USS authoring path (Paths 1/2 from the discussion) is *interesting* but secondary; the more pressing question is whether UI Toolkit's flexbox-based layout is pleasant for our patterns. Once that's answered, USS-based theming is a separate decision.
 
-This experiment validates whether UI Toolkit feels right for *us* by building a representative test panel approximating vanilla's HUD style with **fully external (no inline) USS theming**.
+## Phased plan with visual acceptance gates
 
-## What's being tested
+Each phase is a concrete deliverable. Each gates on visual fidelity to vanilla; if a phase doesn't look acceptable, we stop and reconsider rather than push deeper.
 
-- Can we author a control panel (slider, button, label, text) entirely in C# code with **all styling externalized to USS files**?
-- Does the charcoal theme actually render well in-game?
-- Does the USS variable cascade work cleanly for theme swapping (charcoal → some-future-theme)?
-- How's the developer iteration loop — text edit, save, see result?
-- Are the v0 picking-mode quirks really easy to work around?
+### Phase 1 — Clone vanilla HUD ✦ (current focus)
+
+Build a UI Toolkit replication of vanilla's `LocoControlsUI` (the 450x160 panel anchored bottom-left). Mirror values from the GameUI scene dump:
+
+- Outer panel: 450x160, anchored bottom-left, dark warm bg, rounded
+- Selected Info section: engine name (large), cars/tonnage, location, speed readout (right-aligned)
+- Divider
+- Buttons row: Inspect / Follow / ... / Mode dropdown
+- Controls section: 2x2 grid of sliders (Train Brake / Throttle / Independent / Reverser)
+
+Data is hardcoded — visual fidelity test, not real wiring.
+
+**Acceptance gate:** does it look comparable to vanilla? Side-by-side with the real game HUD running. Style differences are expected (charcoal palette vs vanilla warm-cream) — what we're judging is *layout fidelity* and *production quality*.
+
+### Phase 2 — HUD addition: dynamic brake slider
+
+Insert a dynamic-brake slider **above the throttle slider, between the info section and controls section**. Demonstrates the additive value pattern — extending vanilla's UI with new functionality cleanly, not by injecting into vanilla's prefab but by being our own surface that can include both vanilla's controls AND new ones in a coherent layout.
+
+**Acceptance gate:** does the new slider integrate visually without looking bolted on? Is the layout still coherent?
+
+### Phase 3 — Clone vanilla Inspector
+
+Build a UI Toolkit replication of `ConsistInspectorPanel` (the horizontal-scrolling consist inspector). Per-car cell: CarType, CarName, Destination, Car Content, Brake Stats, Anglecock L/R sliders, Cut Lever L/R buttons.
+
+This is the pain point that motivated the experiment. Its v0 perf was bad (per-tick rebuild of 8+ widgets per car × 200 cars). Our v1 architecture (in-place updates, bindings) addresses this; we'll use that pattern in the cloned inspector.
+
+**Acceptance gate:** does it look at least as good as vanilla's basic Consist Inspector (low bar — vanilla's is unstyled), and is the per-cell construction pattern clean enough to scale?
+
+### Phase 4 — Inspector addition: DPU checkbox
+
+Add a **DPU checkbox underneath MU** in each cell. Demonstrates additive value for the inspector — one new control per car, integrated cleanly.
+
+**Acceptance gate:** does the new checkbox sit naturally in the cell layout? Does adding it require restructuring the cell or does the layout absorb it?
+
+## Phase toggles
+
+`src/ExperimentEntry.cs` has compile-time `const bool` toggles for each phase. Flip them as we gate through:
+
+```csharp
+private const bool ShowHudClone           = true;   // Phase 1
+private const bool AddDynamicBrakeSlider  = false;  // Phase 2
+private const bool ShowInspectorClone     = false;  // Phase 3
+private const bool AddDpuCheckbox         = false;  // Phase 4
+```
+
+Trivial, works for an experiment. (Production would be settings-driven; we're not production.)
+
+## What's being tested (across phases)
+
+- Does UI Toolkit's flexbox layout handle the kinds of layouts vanilla uses (grid-of-sliders, button row, scrolling cell list)?
+- Is programmatic construction pleasant in C#, or does it feel verbose vs. prefab + binding?
+- Does the JSON theme + `IStyle` setter pattern cleanly separate visual identity from layout code?
+- For the inspector: do bindings + in-place updates actually cure the per-tick rebuild perf pain?
+- Are the v0 picking-mode quirks (MouseDownEvent not bubbling through Label) easy to work around with `pickingMode = PickingMode.Ignore` or `ClickEvent`?
 
 ## What's NOT being tested
 
-- Performance under load (defer until we have a real use case)
-- Accessibility (defer until production)
-- Save/load integration (irrelevant — this is dev-only)
-- MP behavior (experiment never ships to a server)
+- Performance under load (defer)
+- Accessibility (defer)
+- Save/load integration (irrelevant)
+- MP behavior (never ships)
+- Real game-state wiring (data is hardcoded)
+- Visual fidelity to vanilla's *exact* aesthetic (charcoal palette intentionally differs — what matters is whether the structure is coherent)
 
-## UI scaling (real concern, partial coverage in this experiment)
+## UI scaling
 
-The game offers a UI scale setting (e.g., 120% on a 4K display). Our UI must respect it — both the game's setting and the user's display DPI.
+The game offers a UI scale setting (e.g., 120% on a 4K display). For UI Toolkit:
+- `PanelSettings.scaleMode = Scale With Screen Size`
+- `referenceResolution = 1920x1080` (matches vanilla's `LocoControlsUI` Canvas Scaler config)
+- `match = 0.5`
 
-For UI Toolkit specifically:
-- `PanelSettings.scaleMode` controls how the panel scales relative to screen
-- Default for our experiment: `Scale With Screen Size`, reference resolution `1920x1080`, match `0.5` (matches vanilla's `LocoControlsUI` Canvas Scaler config from the dump)
-- This handles resolution scaling but **doesn't yet hook the game's UI scale setting**
-
-What the experiment **does** test:
-- Does the panel render at a sensible size on the test display?
-- Does it scale acceptably when the game's resolution changes?
-
-What the experiment **defers** (production concern):
-- Reading the game's current UI scale value (likely a KVO/setting we can subscribe to — needs research when wiring against api)
-- Reacting to UI-scale-changed events
-- Combining game UI scale × display DPI × USS sizing into a coherent result
-
-For now we aim for "looks right at 1920x1080 native" and note any obvious scaling issues. The actual game-UI-scale integration lands when this approach moves into the production `ca.jwsm.railroader.ui` mod with proper api subscriptions.
-
-## Approach
-
-- UMM bootstrap loads the experiment on game start
-- Experiment creates a `UIDocument`-style overlay panel positioned roughly where vanilla's `LocoControlsUI` sits (bottom-left)
-- All visual styling comes from `Themes/charcoal.uss` + `Themes/theme-base.uss`
-- Demo panel includes: title, label, button, slider — enough to exercise the most common widget classes
-- Vanilla's HUD is **not suppressed** for this experiment — side-by-side visual comparison is the point. Suppression is a separate concern that lands when this approach proves out.
-
-## Status & honest constraints
-
-> ⚠️ **USS at runtime requires Unity-bundled assets.** UI Toolkit's `StyleSheet` class can't be parsed from raw text at runtime; it must be a Unity-imported asset shipped in an `AssetBundle`.
-
-Implication: this experiment also needs a small **Unity authoring project** (separate from this mod) that imports the USS files in `Themes/` and builds an `AssetBundle`. The mod loads the bundle at runtime and applies the `StyleSheet` to its root element.
-
-The Unity authoring project doesn't exist yet (waiting on the install to finish). Until it does, this experiment is **scaffold-only** — the C# entry point loads, logs that it's alive, but the actual UI render path is stubbed out.
-
-When Unity is ready, the build pipeline becomes:
-
-1. Edit `Themes/*.uss` files in any text editor (VS Code etc.)
-2. Sync them into the Unity authoring project's `Assets/Themes/` folder (symlink or watch script if manual sync gets annoying)
-3. Unity auto-imports as `StyleSheet` assets
-4. Build the AssetBundle (menu item we'll add)
-5. Output `.bundle` file lands in this experiment's `Assets/bundles/`
-6. Mod loads it at startup, gets `StyleSheet` references, applies them
+This handles resolution scaling. Reading the game's actual UI scale setting and combining with display DPI is deferred to production wiring against api primitives.
 
 ## Layout
 
@@ -80,36 +93,37 @@ ui-toolkit-hud/
 ├── ca.jwsm.railroader.experiments.ui-toolkit-hud.csproj
 ├── info.json                                                ← UMM manifest
 ├── Themes/
-│   ├── charcoal.uss                                         ← default theme (cool blue on charcoal)
-│   └── theme-base.uss                                       ← structural rules using theme vars
-├── Assets/
-│   └── bundles/                                             ← built AssetBundles (output of authoring project)
+│   └── charcoal.json                                        ← palette as JSON tokens
+├── Assets/                                                  ← reserved for future assets
 └── src/
-    └── ExperimentEntry.cs                                   ← UMM bootstrap; stub UI render path
+    ├── Theme.cs                                             ← JSON theme loader
+    ├── HudClone.cs                                          ← Phase 1+2 panel builder
+    └── ExperimentEntry.cs                                   ← UMM bootstrap, phase toggles
 ```
 
 ## Decision criteria
 
-After running the experiment:
+After running through the phases:
 
-**UI Toolkit is the right choice if:**
-- Authoring loop is genuinely faster than the prefab approach
-- USS theming feels comfortable (it should — it's CSS)
-- v0's quirks (picking mode, etc.) are easy to work around
-- Visual result looks acceptable next to vanilla's UI
+**UI Toolkit + programmatic + JSON theme is the right path if:**
+- HUD clone (Phase 1) reaches acceptable visual fidelity with reasonable code volume
+- Adding a new control (Phase 2) is a small, clean diff
+- Inspector clone (Phase 3) is comparable to vanilla and the per-cell pattern scales
+- Adding to a cell (Phase 4) doesn't require restructuring
 
-**uGUI is still the right choice if:**
-- USS rendering has show-stopping limitations we hit immediately
-- The bundling overhead negates the iteration speedup
-- The styled output feels visually wrong or hard to control
-- Cross-mod surface registration patterns are awkward
+**Reconsider if:**
+- Code volume for the layout balloons past "comfortable" (e.g., 1000+ lines for the HUD clone alone)
+- Adding controls requires layout rework rather than additive insertion
+- Per-cell perf in the inspector is bad even with our update model
+- UI Toolkit's runtime APIs have show-stopping limitations we hit
 
-**Hybrid is the right choice if:**
-- UI Toolkit works for floating windows but feels wrong for HUD overlays (or vice versa)
-- Different parts of the production UI naturally favor different tech
+**Switch to USS-based path (Paths 1/2) if:**
+- Programmatic styling feels much more verbose than CSS would
+- Theme swapping requires touching too much code
+- We start wanting cascade/specificity behavior the programmatic approach can't provide cleanly
 
 ## Cleanup
 
-This experiment, regardless of outcome, **does not promote to production as code**. The findings inform `ca.jwsm.railroader.ui`'s implementation; the implementation is written cleanly there.
+Findings inform `ca.jwsm.railroader.ui` design. **The experiment's code does not promote to production.** Production code is rewritten cleanly, informed by what worked and what didn't.
 
-When done, this folder either gets deleted (rare — usually keep as a "we tried this" artifact) or marked frozen with a status note in this README.
+When done with all phases, this folder either gets deleted or marked frozen with a status note here.

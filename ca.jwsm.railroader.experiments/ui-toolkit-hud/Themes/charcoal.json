@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "name": "Charcoal",
+  "description": "Default dark theme. Cool blue accents on charcoal panels. Palette lifted from v0's _reference (our own prior work).",
+
+  "background":     "#1A1C1FE0",
+  "panel":          "#22252AEB",
+  "panelStripe":    "#34383FEB",
+  "titlebarAccent": "#252B38EB",
+  "border":         "#7A7E85FF",
+
+  "textPrimary":    "#E8EAEDFF",
+  "textMuted":      "#9AA0A6FF",
+
+  "accent":         "#4FC3F7FF",
+  "accentHover":    "#81D4FAFF",
+
+  "success":        "#81C995FF",
+  "warning":        "#FDD663FF",
+  "danger":         "#F28B82FF"
+}
