@@ -254,9 +254,17 @@ L3  Feature mods                             ca.jwsm.railroader.mods\*
   if a feature mod thinks it needs to patch, the foundation needs to expose
   the missing primitive (or the mod is misclassified and should be promoted
   to L2).
-- **No vanilla UI modification, ever.** Our UI lives in our own surfaces
-  (windows, our-own-bottom-bar, our-own-toolbars), built on the ui mod's
-  framework. Patching game UI prefabs is forbidden at every layer.
+- **No vanilla UI modification, ever.** We never edit vanilla UI prefabs,
+  never inject our components into vanilla's hierarchy, never adjust vanilla's
+  layout. Our UI lives in our own surfaces.
+- **Replacement is allowed; modification is not.** When we want to extend a
+  vanilla UI element with new features (HUD additions, integrated control
+  widgets, anything where parallel-display would be visually cluttered), the
+  only clean path is to **suppress the vanilla element wholesale** and ship
+  our equivalent in the same visual space — including vanilla's behavior plus
+  our additions. Suppression is a behavior-changing patch in the `ui` mod
+  (L2-allowed); the vanilla widget itself is treated as a black box and
+  never edited. See *Foundational mods / ui / Replacement pattern* below.
 - **Orchestration lives at L1.** Timing, ordering, lifecycle, coordination,
   threading, and caching are kernel primitives. Mods never roll their own.
   When a timing or coordination problem surfaces, the fix lands in the
@@ -577,16 +585,56 @@ lives here so the api kernel doesn't have to host it.
 
 - **Implements** UI contracts defined in api: `IWindowService`,
   `IBottomBarService`, `IThemeService`, `IAssetService`, `ISurfaceRegistry`.
-- **Owns** windowing impl, USS theme, fonts/icons/sprites, surface contracts.
+- **Owns** windowing impl, theme tokens, fonts/icons/sprites/AssetBundle,
+  surface contracts.
 - **Mods contribute components** — they describe content declaratively
   against named surfaces (Equipment window, our-own-bottom-bar, HUD).
-  Mods never touch Unity UI Toolkit. ui owns rendering.
-- **No game UI patching.** All our UI is self-contained in our own surfaces.
-  Theme drift dies because mods can't theme; asset duplication dies because
-  mods request by key.
+  Mods never touch Unity UI directly. ui owns rendering.
+- **Theme drift dies** — mods can't theme; they request tokens.
+  **Asset duplication dies** — mods request by key.
 - **Single project, no tiers.** v0's `abstractions/core/runtime` split was
   a cluster. v1 is one assembly that registers contracts and owns
   implementation.
+
+### Replacement pattern (the only way to extend vanilla UI)
+
+Some vanilla UI surfaces — the HUD especially — can't sustain a parallel
+duplicate. We can't show a coupler-stress bar *next to* vanilla's HUD; we
+can't add a dynamic-brake slider *alongside* the existing brake controls
+without visual clutter. The only clean path is **replacement**:
+
+1. **Build our equivalent** in the ui mod's framework. Our widget includes
+   vanilla's behavior (so nothing is lost) plus our additions (the new
+   features that motivated the replacement).
+2. **Suppress the vanilla element wholesale** via a behavior-changing
+   Harmony patch in the ui mod. Typical mechanism: deactivate the GameObject
+   / Canvas hosting vanilla's widget, or short-circuit whatever activates
+   it. We do **not** edit vanilla's prefab; we treat it as a black box that
+   we hide from outside.
+3. **Our equivalent runs in the same visual slot** the vanilla one used.
+   Player sees one thing, gets vanilla functionality + our extensions.
+
+Why this is allowed under "no vanilla UI modification":
+
+- We never edit vanilla prefabs, never inject our components into vanilla's
+  hierarchy, never adjust vanilla's layout. Vanilla's UI definition is
+  untouched and could be restored just by re-enabling the GameObject.
+- Suppression is a behavior-changing patch in an L2 mod, which the patch
+  policy explicitly allows.
+
+When to replace vs. ship-alongside:
+
+| Surface kind | Pattern |
+|---|---|
+| Modal windows (Inspector, Equipment, Roster) | Build alongside; toggle to replace once feature parity is reached |
+| HUD elements (speedometer, brake indicators, signal aspect) | Replace from day one when you need to extend them — parallel display is too visually cluttered |
+| Bottom bar / toolbars | We build our own (`our-own-bottom-bar`); vanilla's stays untouched |
+| One-off dialogs (settings, prompts) | Build alongside; vanilla keeps working |
+
+The replacement mechanism is the same in both cases — Harmony suppression
+in the ui mod. The only difference is policy: alongside-then-toggle gives
+the player a choice; immediate-replacement is unconditional once the
+extension is ready (because the alternative would be a worse UX).
 
 ---
 
@@ -1209,13 +1257,14 @@ yourself.
 
 ### Where patches live
 
-| Patch type            | Lives in       | Reviewed against                          |
-|-----------------------|----------------|-------------------------------------------|
-| Observer / KVO mirror | api            | "exposes data, changes nothing"           |
-| Behavior modification | physics        | "additive to vanilla, deliberate"         |
-| Cross-cutting hooks   | api            | Must be opt-in by feature mods via contracts |
-| Game UI modification  | **forbidden**  | We never touch vanilla UI prefabs         |
-| Anything in `mods/*`  | **forbidden**  | If you need a patch, the foundation needs to expose a primitive |
+| Patch type                 | Lives in       | Reviewed against                          |
+|----------------------------|----------------|-------------------------------------------|
+| Observer / KVO mirror      | api            | "exposes data, changes nothing"           |
+| Behavior modification      | physics / world | "additive to vanilla, deliberate"        |
+| Cross-cutting hooks        | api            | Must be opt-in by feature mods via contracts |
+| Vanilla UI prefab edit     | **forbidden**  | Editing prefabs / injecting into vanilla's hierarchy / adjusting vanilla's layout is forbidden everywhere |
+| Vanilla UI suppression     | ui             | Hiding a vanilla UI element wholesale (deactivate GameObject / Canvas) so our equivalent can take its slot — see *ui / Replacement pattern*. The vanilla widget is treated as a black box; we never edit it. |
+| Anything in `mods/*`       | **forbidden**  | If you need a patch, the foundation needs to expose a primitive |
 
 ### Default pattern: patches as event publishers
 
