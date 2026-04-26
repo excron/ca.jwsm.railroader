@@ -57,6 +57,18 @@ Bounded scope here — vanilla owns the scene; world doesn't try to do anything 
 - A clean place for "the world is being torn down" / "the world is being assembled" hooks beyond the basic lifecycle phases
 - Coordination between content-contributing mods (mapmodloader) and content-consuming mods (map, dispatch)
 
+## Orchestration role: world-domain load + cache
+
+The api kernel provides the generic primitives (`IGameLifecycle`, `ICacheService`, `IBackgroundExecutor`). **World is the first-class consumer that orchestrates them for the world domain** — and it's the natural single home for that orchestration.
+
+Concretely, world coordinates:
+
+- **Lifecycle** — subscribes to api's granular observer-patch events; exposes typed `IWorldLoad` for late-arriving consumers; sequences world-domain work across `WorldLoading.Construct → Register → Wire → Ready`.
+- **Caching** — owns the cache strategy for world-domain artifacts: merged JSON graph patches (across active map mods), asset-catalog indices (definition-id → bundle entry), pre-built mod-content AssetBundles (layer-2 cache), and derived structures used by world-domain services (track adjacency, Bezier sample tables, switch-decode tables — layer-3 cache). All keyed on input hash + mod set + versions; auto-invalidated on any change.
+- **Threading** — heavy world-load work (manifest parsing, JSON merging, asset-pack discovery, graph derivation) runs through `IBackgroundExecutor`; main-thread continuation applies scene mutations.
+
+This means `mods/mapmodloader` doesn't roll its own caching or threading for world content — it cooperates with world (or just uses world's contracts), and world handles the heavy lifting via api's primitives. One source of truth for world-domain orchestration, one place to optimize when load times become a problem.
+
 ## What world does NOT own
 
 - **Forces, slack, kinematics, mass** — physics
