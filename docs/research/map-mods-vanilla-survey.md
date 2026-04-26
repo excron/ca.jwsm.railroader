@@ -366,7 +366,7 @@ This is the validation that the kernel primitives are right-shaped — they fall
   - **Code mod missing** → refuse to load. Same clear-reason UX as MP rejection.
   - **Content-only map mod missing** → load gracefully. Vehicles stranded on missing track are relocated via the game's replace-consist feature; references to missing industries are dropped; user sees a one-time recovery summary.
   - A mod is "code" if its manifest declares any `assemblies`. Otherwise content-only. The loader applies the right policy automatically.
-- **Identifier conflict — deferred.** Won't preemptively design rename / namespacing. If two mods collide on an identifier, we'll see it as a real failure case and address it then. Probably error-with-clear-report by default.
+- **Identifier conflict — deferred.** Won't preemptively design rename / namespacing. If two mods collide on an identifier, we'll see it as a real failure case and address it then. Probably error-with-clear-report by default. (Note: RL had topology mixintos but apparently no label/identifier mixing — nobody upstream solved this. Deferring isn't laziness; it's refusing to solve a problem with no precedent until it actually bites.)
 
 ### Still open
 
