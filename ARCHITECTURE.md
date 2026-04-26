@@ -251,6 +251,11 @@ L3  Feature mods                             ca.jwsm.railroader.mods\*
 - **No vanilla UI modification, ever.** Our UI lives in our own surfaces
   (windows, our-own-bottom-bar, our-own-toolbars), built on the ui mod's
   framework. Patching game UI prefabs is forbidden at every layer.
+- **Orchestration lives at L1.** Timing, ordering, lifecycle, coordination,
+  threading, and caching are kernel primitives. Mods never roll their own.
+  When a timing or coordination problem surfaces, the fix lands in the
+  api, not in mod-side workarounds. (See *Orchestration discipline* under
+  Feature mods.)
 
 ### Smell tests for layer placement
 
@@ -438,6 +443,49 @@ patched call and publish through `GamePatchBus`. The kernel's
 No mod patches lifecycle hooks themselves. No mod uses reflection to read
 StateManager state. The kernel is the single point of truth.
 
+### Initialization order within phases
+
+Lifecycle phases describe *when* the game is in a state. They don't yet
+describe *how mods initialize within a phase*. v0 hit ordering bugs in the
+map-mod-loader experiments — mod X tried to use mod Y's services before Y
+had finished wiring. The kernel needs to enforce ordering authoritatively.
+
+**Multi-step bootstrap within `Bootstrap` and `WorldLoading` phases:**
+
+```
+1. Construct        ← DI happens; services constructed; no I/O, no game-state access
+2. Register         ← services register their contracts in IServiceRegistry
+3. Wire             ← services subscribe to events, observe streams, attach patches
+4. Ready            ← all services declared ready; cross-mod calls are now safe
+```
+
+The kernel runs **all mods through each step before advancing**. No mod's
+`Wire` runs until every mod's `Register` is complete. That guarantees any
+contract is resolvable during `Wire`.
+
+Within a step, mods are ordered by their **manifest-declared `requires`**
+graph — kernel topo-sorts so a dependent mod's step runs after its
+dependency's step in the same step. Two mods with no dep between them can
+run in parallel within a step (or any order).
+
+This pattern covers two flavors of dependency:
+
+- **Contract dependency** — "I need `IFoo` registered" → resolved by step 2
+  (Register) being complete before step 3 (Wire).
+- **Initialization-order dependency** — "I need Foo's `Wire` to have run
+  before mine" → resolved by topo-sort within the Wire step using
+  `requires`.
+
+Same multi-step pattern applies during `WorldLoading` — mods that need
+to react to world load (load mod state, prime caches, attach world-scoped
+subscriptions) get a `WorldLoading.Wire` step where ordering is again
+topo-sorted by `requires`.
+
+**Mods don't manage their own ordering.** If a mod thinks it needs to delay
+its `Wire` step to wait for another mod, it should declare a `requires`
+instead. Sleep loops, retries, or "is it ready yet?" polling are
+anti-patterns.
+
 ### Persistence cleanup uses lifecycle
 
 Save-scope cleanup (see *Persistence Contract*) hooks the lifecycle events:
@@ -564,6 +612,42 @@ without reading physics consequences.
 Control-modifying mods declare `physics` as a hard dep. Composition root
 enforces. The canonical example is `mods/enginecontrol` — see its README.
 
+### Orchestration discipline: through the api, not around it
+
+The api is the **single source of truth** for orchestration — timing,
+ordering, lifecycle, coordination, threading, caching. When a mod hits a
+problem in any of those areas, **the fix lands in the api, not in mod
+code**.
+
+Anti-patterns to recognize and escalate:
+
+- "It works most of the time but sometimes X isn't ready" → init-order
+  problem. Escalate to the lifecycle/Wire phase ordering, declare a
+  `requires`, or add a kernel-level ready signal. **Don't add a sleep/retry
+  loop in the mod.**
+- "We rebuild this every world load and it's slow" → caching primitive
+  needs to expose the right hashing helper, or the lifecycle hook is
+  missing. **Don't roll a per-mod file cache.**
+- "I need to do this expensive work without freezing the game" → threading
+  primitive. **Don't `Task.Run` directly or write your own
+  SynchronizationContext juggling.**
+- "Mod A keeps stepping on Mod B's state" → contract or event ordering
+  problem in the api. **Don't add a "let me check if A finished" poll
+  in B.**
+
+When you find yourself reaching for sleep, polling, retry, lock, or
+"phantom" coordination state inside a mod, **stop and look at the api
+surface**. Either:
+
+- The primitive you need exists and you're not using it correctly →
+  read the docs.
+- The primitive doesn't exist yet → file an issue, propose the api change,
+  add it to the kernel.
+
+This rule keeps mods thin and the kernel honest. v0's drift happened in
+part because mods worked around api gaps instead of demanding the gap
+be filled.
+
 ---
 
 ## Persistence Contract
@@ -646,6 +730,198 @@ Mods don't opt in or out. Auto-cleanup is unconditional for `Save` scope.
 
 - Default: `.json` (Newtonsoft serialization).
 - Power-user tier supports any extension via `GetFilePath(key, ext)`.
+
+---
+
+## Caching (api kernel primitive)
+
+Many mod-derived artifacts are expensive to build but stable across sessions:
+terrain meshes, track-graph derivations, asset stores, indexed lookups,
+precomputed overlays. Re-deriving them every load wastes time. Mods
+shouldn't roll their own caching — the kernel owns it.
+
+### Goal
+
+If the inputs haven't changed since last session, serve the cached artifact.
+If they have, rebuild and replace. Mods describe inputs; kernel hashes,
+stores, validates, serves.
+
+### Contract
+
+```csharp
+ICacheService                              // L1, in api kernel
+    ICacheContext GetContext(string ownerModId);
+
+ICacheContext
+    bool TryGet<T>(string key, string inputHash, out T value);
+    void Put<T>(string key, string inputHash, T value);
+    void Invalidate(string key);
+    void InvalidateAll();
+
+    // Helpers — mods rarely need to compute their own hashes.
+    string ComputeHashOfFiles(params string[] paths);
+    string ComputeHashOfStrings(params string[] inputs);
+    string CombineHashes(params string[] hashes);
+```
+
+Usage shape:
+
+```csharp
+var inputHash = cache.ComputeHashOfFiles(graphFile, configFile);
+if (!cache.TryGet<TrackGraph>("track-graph", inputHash, out var graph))
+{
+    graph = ExpensiveBuild();
+    cache.Put("track-graph", inputHash, graph);
+}
+```
+
+### Storage
+
+Per-mod folder, parallel to `persist/`:
+
+```
+Mods\ca.jwsm.railroader.<mod>\cache\
+    <key>.<hash>.bin          ← serialized artifact
+    <key>.<hash>.meta         ← metadata (timestamp, mod version)
+```
+
+Filename includes the hash so mismatched-hash files are obviously stale and
+get purged automatically.
+
+### Auto-invalidation
+
+Cache entries are invalidated automatically:
+
+- **Mod version change** — at `BootstrapCompleted`, kernel checks each mod's
+  manifest version against the cache's recorded version. Mismatch → purge.
+- **Input hash mismatch** — `TryGet` returns false; old entry purged on next
+  `Put` for the same key.
+- **Explicit `Invalidate(key)`** — mods can force purge.
+- **`InvalidateAll()`** — for nuclear cases (mod reset).
+
+### What cache is NOT
+
+- Not a replacement for persistence. Cached data is **regeneratable from
+  inputs**; persistence holds **truth that can't be re-derived** (player
+  state, settings, save data).
+- Not for hot-path frame-scoped caching — that's per-service in-memory
+  caching, not file-backed.
+- Not for inter-mod sharing. Each mod's cache is its own.
+
+### Lifecycle interaction
+
+- **`BootstrapCompleted`** — version-check + purge stale.
+- **`ApplicationShuttingDown`** — flush any in-memory pending writes.
+- Cache is otherwise lazy — built on demand by `Put`, served on demand by
+  `TryGet`.
+
+### Format
+
+- Default: MessagePack binary (compact, fast).
+- Per-key opt-out: `Put` overload that takes raw bytes for mods with their
+  own format.
+
+---
+
+## Threading (api kernel primitive)
+
+Most game state lives on Unity's main thread — Unity API access from a
+background thread is undefined behavior. But not everything is Unity API:
+parsing, hashing, compilation, graph derivation, file I/O, MessagePack
+encoding. These are CPU-bound and benefit from background execution.
+
+Mods shouldn't roll their own threads, `Task.Run` choices, or
+synchronization-context juggling. The kernel owns it.
+
+### Goal
+
+Mods declare "this is background-safe work" and get an awaitable handle
+back. Continuation runs on the main thread by default so any follow-up
+that touches game state Just Works. Cancellation, progress, and timing
+are first-class.
+
+### Contract
+
+```csharp
+IBackgroundExecutor                              // L1, in api kernel
+    Task<T> Run<T>(string description,
+                   Func<CancellationToken, T> work);
+
+    Task<T> Run<T>(string description,
+                   Func<CancellationToken, IProgress<float>, T> work);
+
+    Task Run(string description,
+             Action<CancellationToken> work);
+
+IMainThreadDispatcher                            // L1, in api kernel
+    bool IsMainThread { get; }
+    Task RunOnMainThread(Action work);
+    Task<T> RunOnMainThread<T>(Func<T> work);
+```
+
+### Usage shape
+
+```csharp
+// Dispatch expensive graph compilation to a background thread:
+var task = executor.Run<DispatchGraph>(
+    "Compiling dispatch graph",
+    (ct, progress) => {
+        return ExpensiveGraphCompile(rawGraphFile, ct, progress);
+    });
+
+// Continuation runs on main thread by default — safe to touch game state:
+var graph = await task;
+dispatchService.SetGraph(graph);   // back on main thread
+```
+
+### Hard rules
+
+- **Background work MUST NOT touch Unity API** (any UnityEngine type with
+  thread affinity — most of them) **or game state directly**. Read inputs
+  on main thread, copy them in, return results, apply on main thread.
+- **All background tasks get a `CancellationToken`. Mods MUST honor it.**
+  Long-running unkillable work is an anti-pattern.
+- **Continuations default to the main thread.** Mods don't have to think
+  about marshaling unless they explicitly want to chain background work.
+- **`description` is required** — used for diagnostics, perf logging, and
+  UI surfaces (see below). "Doing stuff" is not a description.
+
+### Composition with UI
+
+The threading primitive doesn't know about UI. But the ui mod can provide
+a convenience helper that wraps a `Task` with a "Processing…" overlay:
+
+```csharp
+// In a mod:
+await ui.RunWithProgress("Compiling dispatch graph",
+    executor.Run("Compiling dispatch graph",
+                 (ct, progress) => CompileGraph(ct, progress)));
+```
+
+ui's helper subscribes to `IProgress<float>`, shows a modal/non-modal
+indicator, hides on completion. Threading and UI compose; neither knows
+about the other's internals.
+
+### Lifecycle interaction
+
+- All in-flight background tasks are cancelled on `WorldUnloading` and
+  `ApplicationShuttingDown`. Mods that started a long-running task
+  should not assume it survives a phase transition.
+- The kernel waits a short bounded grace period (e.g., 2s) for cancellations
+  to settle on shutdown. After that, it abandons remaining tasks rather
+  than blocking the game close.
+
+### What threading is NOT
+
+- Not a replacement for Unity coroutines for time-spread main-thread work
+  (frame-paced animations, deferred main-thread updates). Use coroutines
+  for those.
+- Not for inter-thread shared mutable state. The pattern is: copy in,
+  process, copy out. If mods need shared mutable state across threads,
+  they're doing it wrong.
+- Not a job system. CPU-bound parallelism for tight inner loops uses
+  Unity's Job/Burst system if it ever becomes warranted; the executor is
+  for coarse-grained background work.
 
 ---
 
@@ -957,6 +1233,9 @@ implementer / provider.
 | ICommandRegistry          | L1    | Both              | api (kernel)                  |
 | IGameLifecycle            | L1    | Both              | api (kernel)                  |
 | IPersistenceService       | L1    | Host (writes)     | api (kernel)                  |
+| ICacheService             | L1    | Both              | api (kernel)                  |
+| IBackgroundExecutor       | L1    | Both              | api (kernel)                  |
+| IMainThreadDispatcher     | L1    | Both              | api (kernel)                  |
 | IReplicatedStateRegistry  | L1    | Both              | api (kernel)                  |
 | IRequestRouter            | L1    | Both (asymmetric) | api (kernel)                  |
 | ICouplerForces            | L1    | Both              | physics                       |
