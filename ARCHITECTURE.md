@@ -369,6 +369,99 @@ process boundary**. In-process consumers still use the bus and streams.
 
 ---
 
+## Lifecycle (api kernel primitive)
+
+The api kernel owns the canonical game-lifecycle surface. Mods don't patch
+lifecycle hooks themselves — they subscribe to typed events on the bus or
+query `IGameLifecycle` for current phase / current save id.
+
+This is a first-class kernel concern because almost every component cares
+about it: persistence (cleanup, save state at strategic moments), foundational
+mods (patch state reset across save loads), ui (show/hide on phase change),
+logger (per-session file boundaries), feature mods (load mod state on world
+load, save on unload).
+
+### Phases
+
+```
+Bootstrap                 ← api itself coming up; before any mod loads
+        │
+PreGame                   ← UMM loaded us, vanilla at main menu, no world
+        │
+WorldLoading              ← a save is being loaded (or new game starting)
+        │
+WorldLoaded               ← in-game and ready
+        │
+WorldUnloading            ← about to leave the world (with reason)
+        │
+WorldUnloaded             ← back at main menu
+        │
+ApplicationShuttingDown   ← process is exiting
+```
+
+`PreGame ↔ WorldLoading → WorldLoaded → WorldUnloading → WorldUnloaded` is
+a loop the player can run multiple times in a single session (exit to menu,
+load another save, exit again).
+
+### Contract
+
+```csharp
+IGameLifecycle                              // L1, in api kernel
+    LifecyclePhase CurrentPhase { get; }
+    string CurrentSaveId { get; }            // null when not in WorldLoaded
+    bool IsInWorld { get; }                  // CurrentPhase == WorldLoaded
+
+    // Events also published on IEventBus for subscribers that prefer that.
+    event Action<WorldLoadingEvent>          WorldLoading;
+    event Action<WorldLoadedEvent>           WorldLoaded;
+    event Action<WorldUnloadingEvent>        WorldUnloading;
+    event Action<WorldUnloadedEvent>         WorldUnloaded;
+    event Action<ApplicationShutdownEvent>   ApplicationShuttingDown;
+```
+
+### Why both service and bus
+
+Subscribing via `IEventBus` is the default. The service is for **late
+arrivers**: a mod that loads after `WorldLoaded` has already fired needs to
+know it's already in-world without waiting for the next event. The service
+also exposes `CurrentSaveId` for "what save are we on right now" without
+hooking events.
+
+### Implementation pattern
+
+Lifecycle is detected by **observer patches in api/host** that follow the
+patches-as-event-publishers default — they shape an event payload from the
+patched call and publish through `GamePatchBus`. The kernel's
+`IGameLifecycle` implementation subscribes, updates `CurrentPhase` and
+`CurrentSaveId`, and re-fires typed events to consumers.
+
+No mod patches lifecycle hooks themselves. No mod uses reflection to read
+StateManager state. The kernel is the single point of truth.
+
+### Persistence cleanup uses lifecycle
+
+Save-scope cleanup (see *Persistence Contract*) hooks the lifecycle events:
+
+- **`BootstrapCompleted`** — scan + clean orphaned save data (catches
+  anything from prior sessions, especially crashes that skipped shutdown).
+- **`WorldLoading`** — scan + clean (defensive, catches anything that
+  changed while we were at the menu).
+- **`WorldUnloaded`** — scan + clean (catches saves the player just deleted
+  via the in-game menu).
+- **`ApplicationShuttingDown`** — scan + clean (catches saves deleted at
+  the main menu after returning from a world; data doesn't linger on disk
+  between sessions).
+
+If vanilla exposes a save-list-mutation event, the cleanup also subscribes
+to it for instant reactive cleanup — bonus, not source of truth.
+
+**Performance note:** cleanup is file deletes only — sub-second even for
+large stores. The `ApplicationShuttingDown` handler must complete fast
+enough to never delay game close. Wrap in try/catch; on any timeout-like
+condition, abandon and let the next `BootstrapCompleted` catch it.
+
+---
+
 ## Foundational mods
 
 Required-foundational mods sit at L2. The composition root warns or refuses
@@ -862,6 +955,7 @@ implementer / provider.
 | IEventBus                 | L1    | Both              | api (kernel)                  |
 | IServiceRegistry          | L1    | Both              | api (kernel)                  |
 | ICommandRegistry          | L1    | Both              | api (kernel)                  |
+| IGameLifecycle            | L1    | Both              | api (kernel)                  |
 | IPersistenceService       | L1    | Host (writes)     | api (kernel)                  |
 | IReplicatedStateRegistry  | L1    | Both              | api (kernel)                  |
 | IRequestRouter            | L1    | Both (asymmetric) | api (kernel)                  |
