@@ -742,37 +742,76 @@ yourself.
 | Game UI modification  | **forbidden**  | We never touch vanilla UI prefabs         |
 | Anything in `mods/*`  | **forbidden**  | If you need a patch, the foundation needs to expose a primitive |
 
-### Static handoff pattern
+### Default pattern: patches as event publishers
 
-Patches are static (Harmony requirement). To reach injected services, use
-the established pattern:
+Patches own **no logic**. They shape an event payload from the patched call
+and publish to the bus. Mods (foundational or feature) subscribe and decide
+what to do.
 
 ```csharp
-// api/Patches/SomeFeaturePatchState.cs
-internal static class SomeFeaturePatchState
-{
-    internal static IServiceX Service;  // set by composition root
-}
-
-// api/Patches/SomeFeaturePatch.cs
+// api/Patches/SomeGameEventPatch.cs
 [HarmonyPatch(typeof(GameType), "Method")]
-internal static class SomeFeaturePatch
+internal static class SomeGameEventPatch
 {
     [HarmonyPostfix]
     private static void Postfix(GameType __instance)
     {
-        var svc = SomeFeaturePatchState.Service;
-        if (svc == null) return;       // composition root hasn't wired yet
-        // ... use svc.X, svc.Y ...
+        GamePatchBus.Publish(new SomeGameEvent(__instance.Id, __instance.SomeValue));
+    }
+}
+```
+
+`GamePatchBus` is a thin static publisher that the composition root connects
+to the real `IEventBus` once it's wired. Until connected, publishes are
+no-ops (graceful degradation during bootstrap).
+
+Why this is the default:
+
+- Patches stay trivial — one publish per hook, no logic to test in patch land.
+- All decision-making lives in subscribers, where it's testable and DI-able.
+- The static patch-state-holder pattern goes away entirely.
+- Adding subscribers doesn't require changing patches.
+
+This pattern was identified by reviewing v0 (see
+`docs/research/v0-api-review.md`) and is the recommended approach for new
+patches in v1.
+
+### Fallback: static handoff (narrow cases only)
+
+When a patch genuinely needs synchronous service access — typically a
+**behavior-changing prefix** that returns `false` to skip the original, or
+needs to consult authority before deciding what to publish — the legacy
+static-handoff pattern is acceptable:
+
+```csharp
+// foundational-mod/Patches/SomeBehaviorPatchState.cs
+internal static class SomeBehaviorPatchState
+{
+    internal static IServiceX Service;  // set by composition root
+}
+
+// foundational-mod/Patches/SomeBehaviorPatch.cs
+[HarmonyPatch(typeof(GameType), "Method")]
+internal static class SomeBehaviorPatch
+{
+    [HarmonyPrefix]
+    private static bool Prefix(GameType __instance)
+    {
+        var svc = SomeBehaviorPatchState.Service;
+        if (svc == null) return true;       // not wired yet — defer to vanilla
+        return svc.ShouldRun(__instance);   // return false to skip vanilla
     }
 }
 
-// api/Bootstrap/CompositionRoot.cs
-SomeFeaturePatchState.Service = serviceX;
+// foundational-mod/Bootstrap/CompositionRoot.cs
+SomeBehaviorPatchState.Service = serviceX;
 
-// api/Bootstrap/PatchState.cs (Reset on save unload)
-SomeFeaturePatchState.Service = null;
+// foundational-mod/Bootstrap/PatchState.cs (Reset on save unload)
+SomeBehaviorPatchState.Service = null;
 ```
+
+Behavior-changing patches are **L2-only** (physics or ui), never api, never
+`mods/*`. So this pattern lives in foundational mods, not in the kernel.
 
 ### Authority gating in patches
 
