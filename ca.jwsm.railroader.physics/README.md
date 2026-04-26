@@ -10,6 +10,24 @@ Anywhere our derived truth disagrees with vanilla, vanilla wins for what it cont
 
 The exact shape of the model — observation-only with better math vs. selective intervention via `ControlProperties` — is a phase-3-ish design call, not settled here.
 
+## Vanilla evolves; our contracts don't
+
+Vanilla has scaffolding for features it doesn't currently use (derailment formulas in `TrainMath`, a `TrackCondition` parameter that's hardcoded to `Dry`, an unused curve-speed-enforcement path). Future game patches will likely wire some of these up — weather→adhesion coupling is expected.
+
+When that happens, this mod's **implementation** swaps its input source for that specific value. The **contract** on the api boundary stays stable. Consumers don't know or care whether `IAdhesion.GetCoefficient(...)` was derived by us from velocity + curvature + grade, or relayed from a vanilla weather system.
+
+This gives us permission to ship "good enough" derivations now without locking ourselves out of cleaner implementations later. The migration when vanilla catches up is a 1-day implementation swap, not a redesign.
+
+## Vanilla physics map
+
+Current snapshot of what vanilla provides (and conspicuously doesn't): see [`docs/research/physics-vanilla-survey.md`](../docs/research/physics-vanilla-survey.md). Headlines:
+
+- 1D linearized constraint solver in `IntegrationSet`. No force vectors.
+- Wheel slip is a 3-state enum, not a number. Adhesion is velocity-only.
+- Speed limits = `min(posted, curve-derived)`. No grade, weight, weather, or temporary slow orders.
+- `TrainMath` has formulas (derailment, curve speed) it doesn't actually call.
+- One canonical hook: postfix `TrainController.FixedUpdate()`.
+
 ## Owns
 
 - Implementations of physics contracts defined in api: `ICouplerForces`, `IKinematics`, `IAirState`, `IPowerState`, `IMassModel`, `ITrackProfile`, `IConsistTopology`, `IConsistDirection`.

@@ -389,9 +389,19 @@ Provides the physics streams other mods rely on.
 - **May patch** vanilla code if needed to observe state for derivation.
   Behavior modification of vanilla physics is allowed but must be deliberate
   and additive.
+- **Vanilla evolves; our contracts don't.** Vanilla has scaffolding for
+  features it doesn't currently use (derailment formulas, weather-coupled
+  adhesion, curve-speed enforcement). Future game patches will fill some of
+  these in. When that happens, our physics mod's *implementation* swaps its
+  input source for that value; the *contract* on the api boundary stays
+  stable. Consumers don't know or care which side computed the value. This
+  gives us permission to ship "good enough" derivations now without locking
+  ourselves out of cleaner implementations later.
 
 The exact shape of the model — observation-only with better math vs. selective
 intervention via `ControlProperties` — is a phase-3-ish design call.
+
+Vanilla physics surface is mapped in `docs/research/physics-vanilla-survey.md`.
 
 ### `ui` — UI framework
 
