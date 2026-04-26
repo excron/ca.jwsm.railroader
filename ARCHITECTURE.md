@@ -704,12 +704,32 @@ Power-user tier opts out: mods using SQLite/etc. handle their own atomicity.
 
 No `World` scope yet — defer until a real use case appears.
 
-### Mod-parity validation on load
+### Mod validation on load
 
-A save records the mod set that produced it. Loading refuses if the local
-mod set isn't a match, with the same hard-fail discipline as MP join
-(see *Multiplayer / mod parity*). The api kernel enforces this; mods
-don't opt in or out.
+A save records the mod set that produced it. The api kernel checks the
+local mod set against the save's record at load time. The policy splits
+by mod type:
+
+- **Code mod missing** → refuse to load. Code mods affect simulation,
+  contracts, behavior — the save is meaningless without them. Same
+  clear-reason UX as MP join rejection.
+- **Content-only map mod missing** → load gracefully. Content-only
+  mods (no DLL, just JSON + AssetBundle) can be reconciled on load:
+  - Vehicles stranded on missing track are relocated using the game's
+    "replace consist" feature (move to nearest equivalent existing track).
+  - References to missing industries are dropped (orphaned contracts,
+    waybills, performance history).
+  - User sees a one-time summary: "Loaded with 2 missing map mods.
+    Relocated 7 vehicles. Cleared 3 orphaned contracts."
+
+A mod is "code" if its manifest declares any `assemblies`. Otherwise
+it's content-only. The loader applies the right policy automatically.
+
+This is the one place mod-validation is intentionally NOT symmetric with
+MP parity: solo play tolerates content-only divergence because the player
+isn't synchronizing with anyone, and the recovery story is real (replace
+consist works). MP can't tolerate it because two players can't see
+different worlds and call it the same game.
 
 ### Save-scope cleanup
 
@@ -1088,7 +1108,7 @@ A settings toggle that runs the local instance as if it were a remote client
 Catches "I forgot to gate this on host" bugs at dev time without needing a
 second machine.
 
-### Mod parity (hard rule)
+### Mod parity (hard rule for MP)
 
 **Server and client must run identical mod sets to play together.** No
 partial-MP, no graceful degradation, no "best effort." Mismatch on connect
@@ -1107,24 +1127,16 @@ dependencies also declares MP parity — every mod is automatically
 parity-required unless it opts out (rare; only for purely-local mods like
 in-game console UX additions).
 
-**Saves inherit the same rule.** A save records the mod set that produced
-it; loading refuses if the local mod set isn't a match, with the same
-clear-reason UX. This falls out automatically: a save's mod set is just
-what the host had when saving.
+Why MP parity is hard even for content-only mods:
 
-Why this rule:
-
-- The save format only persists game state, not map content (industries,
-  track, scenery come from mod assets every load). Missing a content mod =
-  orphan references = corrupt save.
-- Mod-divergent simulations diverge silently. A client missing a physics
-  mod believes different forces; the host's authoritative state would keep
+- Mod-divergent simulations diverge silently. A client missing a code
+  mod believes different forces; the host's authoritative state keeps
   overriding, but the client's UI lies.
-- "Refuse with clear reason" is honest. "Try to load anyway and pray" is
-  the v0 path that produced unrecoverable saves.
-
-This rule is enforced by the api kernel at connection time and at save
-load time; mods don't have to opt in.
+- Even content-only divergence breaks UX: client missing a map mod sees
+  "ghost" cars on track that doesn't exist client-side, industries the
+  client can't interact with.
+- "Refuse with clear reason" is honest. "Try to load anyway and pray"
+  is the v0 path that produced unrecoverable sessions.
 
 ### State sync — when to use what
 

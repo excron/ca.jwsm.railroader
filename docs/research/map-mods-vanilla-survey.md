@@ -360,9 +360,12 @@ This is the validation that the kernel primitives are right-shaped — they fall
 
 ### Decided
 
-- **DLL loading — deferred indefinitely.** No observed map mod ships a code DLL; pattern doesn't appear in the wild. We don't design for it. If evidence emerges later, revisit.
-- **MP mod-parity — hard refuse-to-join.** Server and client must run identical mod sets. Mismatch = refuse, with explicit reason: "Server runs [list], client is missing [list]" (and vice versa for client-only mods). No partial-MP, no graceful degradation, no "best effort." See the *Multiplayer / mod parity* section in ARCHITECTURE.md.
-- **Save validation — same rule.** Saves require their full mod set to be present and version-matched to load. Missing → refuse with the same clear-reason UX. Falls out of MP-parity automatically: a save's mod set is just the set the host had when saving.
+- **DLL-bearing map mods — not supported.** No observed map mod ships a code DLL; pattern doesn't appear in the wild. If a "map mod" ships a DLL, it's a code mod by definition (with content) and gets the code-mod policy below.
+- **MP mod-parity — hard refuse-to-join, all mods.** Server and client must run identical mod sets (content-only included — divergent worlds break UX even if the simulation is host-authoritative). Refuse with explicit reason. See *Multiplayer / mod parity* in ARCHITECTURE.md.
+- **Save validation — split by mod type.**
+  - **Code mod missing** → refuse to load. Same clear-reason UX as MP rejection.
+  - **Content-only map mod missing** → load gracefully. Vehicles stranded on missing track are relocated via the game's replace-consist feature; references to missing industries are dropped; user sees a one-time recovery summary.
+  - A mod is "code" if its manifest declares any `assemblies`. Otherwise content-only. The loader applies the right policy automatically.
 - **Identifier conflict — deferred.** Won't preemptively design rename / namespacing. If two mods collide on an identifier, we'll see it as a real failure case and address it then. Probably error-with-clear-report by default.
 
 ### Still open
@@ -393,4 +396,4 @@ This is the validation that the kernel primitives are right-shaped — they fall
 5. Save format only has game state. Missing-mod validation on load is mandatory.
 6. `mods/*` can't patch — loader needs hooks in `physics` (or a new L2 world-orchestration mod) for actual injection.
 7. The recent kernel primitives (lifecycle multi-step init, topo-sorted requires, cache, threading) are exactly the right tools for this problem.
-8. Decisions: no DLL support (not in the wild); MP requires mod parity (hard refuse-to-join with reason); saves inherit the same rule; identifier conflict deferred until evidence demands it.
+8. Decisions: DLL-bearing map mods don't exist in the wild (treat any DLL-bearing mod as a code mod); MP requires hard mod parity (no exceptions); save load splits by mod type — code missing = refuse, content-only missing = graceful recovery via replace-consist + orphan cleanup; identifier conflict deferred.
