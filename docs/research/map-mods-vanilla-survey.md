@@ -356,14 +356,19 @@ This is the validation that the kernel primitives are right-shaped — they fall
 
 ---
 
-## Open questions
+## Decisions and open questions
 
-- **Where exactly do we hook?** Need to confirm the precise vanilla call sequence for "after PrefabStore ready, before industries tick." May warrant a focused mining pass when we get to phase 6/7.
-- **DLL loading.** When/how do we load a map mod's optional code DLL? Reflection-scan all assemblies, or have manifest declare types? Probably the latter — explicit > implicit.
+### Decided
+
+- **DLL loading — deferred indefinitely.** No observed map mod ships a code DLL; pattern doesn't appear in the wild. We don't design for it. If evidence emerges later, revisit.
+- **MP mod-parity — hard refuse-to-join.** Server and client must run identical mod sets. Mismatch = refuse, with explicit reason: "Server runs [list], client is missing [list]" (and vice versa for client-only mods). No partial-MP, no graceful degradation, no "best effort." See the *Multiplayer / mod parity* section in ARCHITECTURE.md.
+- **Save validation — same rule.** Saves require their full mod set to be present and version-matched to load. Missing → refuse with the same clear-reason UX. Falls out of MP-parity automatically: a save's mod set is just the set the host had when saving.
+- **Identifier conflict — deferred.** Won't preemptively design rename / namespacing. If two mods collide on an identifier, we'll see it as a real failure case and address it then. Probably error-with-clear-report by default.
+
+### Still open
+
+- **Where exactly do we hook into world load?** Need to confirm the precise vanilla call sequence for "after PrefabStore ready, before industries tick." Focused mining pass when we get to phase 6/7.
 - **AssetBundle versioning.** If a mod ships v1.0 and updates to v2.0 with the same identifiers, do we replace, refuse, or warn? Probably replace + invalidate cache.
-- **Identifier uniqueness.** Two mods both define industry `"Yard_1"` — error, or namespace-rename to `"mod.id.Yard_1"`? Probably error with a clear conflict report.
-- **Save validation UI.** Missing mod on load: list missing mods, offer "load anyway with data loss" or block? Probably both, default block.
-- **MP parity.** Mod present on host but not client (or vice versa) — handshake during connect, refuse to join if mismatch. Same `info.json requires` mechanism could declare which mods need MP parity.
 - **Hot reload.** Out of scope for v1. Restart-required.
 
 ---
@@ -388,4 +393,4 @@ This is the validation that the kernel primitives are right-shaped — they fall
 5. Save format only has game state. Missing-mod validation on load is mandatory.
 6. `mods/*` can't patch — loader needs hooks in `physics` (or a new L2 world-orchestration mod) for actual injection.
 7. The recent kernel primitives (lifecycle multi-step init, topo-sorted requires, cache, threading) are exactly the right tools for this problem.
-8. New questions surfaced: DLL loading model, MP mod-parity, save-validation UI, identifier conflict handling.
+8. Decisions: no DLL support (not in the wild); MP requires mod parity (hard refuse-to-join with reason); saves inherit the same rule; identifier conflict deferred until evidence demands it.

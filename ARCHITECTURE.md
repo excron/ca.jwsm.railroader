@@ -704,6 +704,13 @@ Power-user tier opts out: mods using SQLite/etc. handle their own atomicity.
 
 No `World` scope yet — defer until a real use case appears.
 
+### Mod-parity validation on load
+
+A save records the mod set that produced it. Loading refuses if the local
+mod set isn't a match, with the same hard-fail discipline as MP join
+(see *Multiplayer / mod parity*). The api kernel enforces this; mods
+don't opt in or out.
+
 ### Save-scope cleanup
 
 Day-one behavior: orphaned save-scoped data is removed automatically. A mod
@@ -1080,6 +1087,44 @@ A settings toggle that runs the local instance as if it were a remote client
 (authority = Client, host-only services skipped, client-only paths exercised).
 Catches "I forgot to gate this on host" bugs at dev time without needing a
 second machine.
+
+### Mod parity (hard rule)
+
+**Server and client must run identical mod sets to play together.** No
+partial-MP, no graceful degradation, no "best effort." Mismatch on connect
+= refuse-to-join, with explicit reason in the rejection message:
+
+```
+Cannot join: mod set mismatch.
+  Server runs but client is missing:  [mod-a v1.2, mod-b v0.4]
+  Client runs but server is missing:  [mod-c v2.0]
+  Version mismatches:                 [mod-d server v1.0, client v1.1]
+```
+
+The handshake happens at connection time, before any game state syncs.
+The same `info.json` `requires` mechanism that declares cross-mod
+dependencies also declares MP parity — every mod is automatically
+parity-required unless it opts out (rare; only for purely-local mods like
+in-game console UX additions).
+
+**Saves inherit the same rule.** A save records the mod set that produced
+it; loading refuses if the local mod set isn't a match, with the same
+clear-reason UX. This falls out automatically: a save's mod set is just
+what the host had when saving.
+
+Why this rule:
+
+- The save format only persists game state, not map content (industries,
+  track, scenery come from mod assets every load). Missing a content mod =
+  orphan references = corrupt save.
+- Mod-divergent simulations diverge silently. A client missing a physics
+  mod believes different forces; the host's authoritative state would keep
+  overriding, but the client's UI lies.
+- "Refuse with clear reason" is honest. "Try to load anyway and pray" is
+  the v0 path that produced unrecoverable saves.
+
+This rule is enforced by the api kernel at connection time and at save
+load time; mods don't have to opt in.
 
 ### State sync — when to use what
 
