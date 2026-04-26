@@ -837,7 +837,7 @@ back-edits to a prior one.
 
 | Phase | Mining targets (ILSPY) | Output |
 |-------|------------------------|--------|
-| **0. Bootstrap** | UMM lifecycle, Railloader status, Harmony patterns | api kernel: composition root + mod lifecycle + ILoggerFactory + IAuthority + IEventBus + IServiceRegistry + ICommandRegistry |
+| **0. Bootstrap** | UMM lifecycle, Harmony patterns | api kernel: composition root + mod lifecycle + ILoggerFactory + IAuthority + IEventBus + IServiceRegistry + ICommandRegistry |
 | **1. Persistence + save lifecycle** | StateManager, save messages, mod data conventions | IPersistenceService with two-tier API + atomic write |
 | **2. Physics — kinematics + topology** | Car, BaseLocomotive, EnumerateCoupled, FrontIsA | physics mod scaffolding; IConsistTopology, IConsistDirection, IKinematics |
 | **3. Physics — air + power** | LocomotiveAirSystem, BrakeLine, VentedValve, AirConnection, ControlProperties | IAirState, IPowerState, IControlRequest |
