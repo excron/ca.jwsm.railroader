@@ -64,6 +64,9 @@ namespace Ca.Jwsm.Railroader.Experiments.UiToolkitHud
 
         // JSON shape mirrors Themes/charcoal.json. Public fields required by
         // JsonUtility; field names match JSON keys exactly (case-sensitive).
+        // Fields are populated via reflection by JsonUtility.FromJson, so
+        // the compiler's "field never assigned" warning is noise.
+#pragma warning disable CS0649
         [Serializable]
         private class ThemeData
         {
@@ -87,5 +90,6 @@ namespace Ca.Jwsm.Railroader.Experiments.UiToolkitHud
             public string warning;
             public string danger;
         }
+#pragma warning restore CS0649
     }
 }

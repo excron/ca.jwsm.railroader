@@ -53,6 +53,10 @@ A "shape-respecting" experiment teaches us patterns that work *in our system*, n
 
 The experiment's **code itself never gets promoted** to production. Production code is rewritten cleanly, informed by what the experiment proved possible. Same posture as our "no copy-paste from v0" rule.
 
+## Completed experiments (frozen reference)
+
+- **[ui-toolkit-hud](ui-toolkit-hud/)** — validated UI Toolkit + programmatic + JSON-theme as the production UI tech. Built clones of vanilla's HUD and CarInspector with charcoal palette, exercised additive-value extensions (dynamic brake slider, DPU toggle, coupler-forces pill strip). Status: COMPLETE (2026-04-26). See its README's "STATUS: COMPLETE" section for findings, decisions, and gotchas worth not repeating.
+
 ## Layout
 
 Each experiment is a self-contained folder:

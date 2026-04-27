@@ -1,5 +1,59 @@
 # Experiment: UI Toolkit HUD
 
+## STATUS: COMPLETE — 2026-04-26
+
+All four phases passed their visual acceptance gates. Both clones (HUD and CarInspector) render at vanilla-faithful structure with charcoal-palette differentiation. Additive-value extensions (dynamic brake slider, DPU toggle, coupler-forces pill strip) work end-to-end without touching vanilla UI.
+
+### Outcome per phase
+
+| Phase | Result |
+|---|---|
+| 1. Clone vanilla HUD (LocoControlsUI) | ✅ Structure matches vanilla; charcoal palette intentional |
+| 2. Insert dynamic brake slider above throttle | ✅ Panel grows 160→210, slider sits where intended |
+| 3. Clone vanilla CarInspector | ✅ Side-by-side comparison shows tight structural match |
+| 4. Add DPU toggle under MU | ✅ One-line insertion via `Insert(muIndex+1, dpu)`; window auto-grew 366→396 |
+| Bonus: Coupler-forces pill strip | ✅ Reused `BuildPillStrip` helper; stacks below brake strip cleanly |
+
+### Decisions reached
+
+- **Use UI Toolkit (not uGUI)** for the bulk of production UI. Flexbox handles vanilla's patterns cleanly; programmatic construction in C# is pleasant when paired with a small theme-tokens helper.
+- **Theme via JSON tokens + `IStyle` setters** (Path 3 from the early discussion). No USS at runtime — Unity's StyleSheet parser is editor-only, and we don't want a bundling pipeline just for theming. JSON loaded at startup, applied programmatically. Works.
+- **Multiply at construction** for UI scale, not GPU `style.scale` transform. Deterministic, no transform-origin quirks. `S(v) => v * uiScale` helper threaded through every dimension literal.
+- **Vanilla's `Messenger<CanvasScaleChanged>` is the right hook** for live UI-scale updates. Not polling. Confirmed via ILSPY, subscribed via `Messenger.Default.Register<CanvasScaleChanged>` (GalaSoft.MvvmLight bundled inside Assembly-CSharp).
+- **The "panel grows when extension added" pattern** (constants `BasePanelHeight` / `HeightWithDynamicBrake`) is real and reusable. Production `ca.jwsm.railroader.ui` should formalize this as a helper for any extensible window.
+- **Always-on UPPERCASE labels** (`.ToUpper()` at source) match vanilla's TMP `UPPERCASE` font-material preset since UI Toolkit lacks `text-transform`.
+
+### Notable infrastructure built (worth migrating in spirit)
+
+- **Runtime dumper** (`RuntimeDumper.cs`) — F8 dumps everything (active scenes + DDOL), F9 dumps by name fragment. Catches dynamically-instantiated UI that AssetRipper-extracted scenes miss. Should land as a permanent dev tool in production (`mods/console` or similar).
+- **Pill-strip primitive** (`BuildPillStrip(track, fill, fillPct, marginTop)`) — generic gauge widget; stack as many as needed (brake, coupler, future stress indicators). Trivial template for any production gauge cluster.
+- **Reverser column with twin REV/FWD labels** — pattern for sliders that semantically need split labels.
+
+### Honest gotchas the session surfaced (write down so we don't repeat)
+
+- AssetRipper extraction **does not capture dynamically-instantiated UI**. The CarInspector lives in DontDestroyOnLoad and only exists at runtime. F9 fragment search of the live scene is the only reliable way to find it.
+- **DDOL scene must be walked separately** — `SceneManager.GetSceneAt(i)` doesn't include it. Trick: create a temp GameObject, mark `DontDestroyOnLoad`, then `temp.scene.GetRootGameObjects()`.
+- **Vanilla GameObject names can be the full type name** (e.g., `UI.CarInspector.CarInspector`). Search by name fragment, not exact match.
+- **Legacy `UnityEngine.Input.GetKeyDown` is often a no-op** when the new InputSystem is the active handler. Use `Keyboard.current.fXKey.wasPressedThisFrame` instead. (Wasn't actually needed here in the end — the legacy API worked — but worth knowing.)
+- **TMP rich-text in dumps was being truncated** (40-char cap in the editor-side dumper). The runtime dumper deliberately doesn't truncate — captures rich-text formatting fully so multi-line/styled content like `<mspace>15</mspace>\n<color>MPH</color>` is preserved.
+- **Vanilla's `Preferences.GraphicsCanvasScale`** is just `PlayerPrefs.GetFloat("gfx.canvas.scale", 1f)`. Read directly; don't go hunting for `CanvasScaler.scaleFactor` on a specific canvas (only canvases with `CanvasSettingsApplicator` get the value applied, and `Canvas - HUD` isn't necessarily one of them).
+
+### What does NOT migrate to production
+
+- **The experiment code itself** — production code is rewritten cleanly in `ca.jwsm.railroader.ui` informed by the lessons here. Same posture as our "no copy-paste from v0" rule.
+- **`InspectorClone.cs`** — built for the wrong inspector (ConsistInspectorPanel is not the vehicle inspector users actually open). Kept here as a "we built the wrong one" artifact. Lesson: confirm the target with a runtime dump *first*, not from a static-scene assumption.
+- **The `ConstantPixelSize` PanelSettings + `unityFont = LegacyRuntime`** specifics — production will use proper TMP font loading and probably a different Panel Settings asset shipped via AssetBundle. We approximated to get visual fidelity in the experiment.
+
+### Cleanup
+
+This experiment **does not get deleted** — it's frozen as a high-value reference artifact. Anyone asking "is UI Toolkit viable for our needs?" reads this README and looks at the code. The mod stays buildable so future-us can re-run it for visual sanity-checking when designing production windows.
+
+If/when `ca.jwsm.railroader.ui` ships windows that supersede this experiment's, the experiment can be deleted. Until then, leave it.
+
+---
+
+
+
 ## The question
 
 **Is UI Toolkit + programmatic layout the right tech for the bulk of our UI work** — specifically the HUD and Inspector that gave us the most pain in v0?
