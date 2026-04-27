@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "name": "Warm Gray",
+  "description": "Warm chocolate-brown panels with copper accents. Library / kerosene-lamp tones.",
+
+  "background":     "#1F1B17E0",
+  "panel":          "#2A2521EB",
+  "panelStripe":    "#332D28EB",
+  "titlebarAccent": "#2D241DEB",
+  "border":         "#8B7E6DFF",
+
+  "textPrimary":    "#ECE5DAFF",
+  "textMuted":      "#A89C8AFF",
+
+  "accent":         "#D9A86CFF",
+  "accentHover":    "#E5BB7EFF",
+
+  "success":        "#A8C68BFF",
+  "warning":        "#E8B765FF",
+  "danger":         "#D88471FF"
+}

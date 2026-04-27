@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "name": "Dark Purple",
+  "description": "Deep plum panels with magenta-violet accents. Velvet drapes and stage curtains.",
+
+  "background":     "#1B1424E0",
+  "panel":          "#2A1F3AEB",
+  "panelStripe":    "#352843EB",
+  "titlebarAccent": "#2D1F4DEB",
+  "border":         "#8E7FA8FF",
+
+  "textPrimary":    "#ECE5F5FF",
+  "textMuted":      "#9C90B0FF",
+
+  "accent":         "#C779D9FF",
+  "accentHover":    "#DC9AE5FF",
+
+  "success":        "#7DB590FF",
+  "warning":        "#FDD663FF",
+  "danger":         "#E47C8EFF"
+}
