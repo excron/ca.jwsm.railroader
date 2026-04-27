@@ -13,7 +13,8 @@ namespace Ca.Jwsm.Railroader.Experiments.UiToolkitHud
     /// Runtime UI structure dumper. Press F8 in-game to capture the live
     /// scene's UI hierarchy to a timestamped text file in the mod's dumps/
     /// folder. Required for inspecting dynamically-instantiated UI like
-    /// the CarInspector that doesn't exist at AssetRipper extraction time.
+    /// the CarInspector — these GameObjects only exist while the relevant
+    /// window is open, so runtime inspection is the only reliable path.
     ///
     /// Output format mirrors the editor-side UIStructureDumper but with
     /// NO TMP text truncation — full text content is captured so rich-text

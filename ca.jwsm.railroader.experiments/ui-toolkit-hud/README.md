@@ -25,13 +25,13 @@ All four phases passed their visual acceptance gates. Both clones (HUD and CarIn
 
 ### Notable infrastructure built (worth migrating in spirit)
 
-- **Runtime dumper** (`RuntimeDumper.cs`) — F8 dumps everything (active scenes + DDOL), F9 dumps by name fragment. Catches dynamically-instantiated UI that AssetRipper-extracted scenes miss. Should land as a permanent dev tool in production (`mods/console` or similar).
+- **Runtime dumper** (`RuntimeDumper.cs`) — F8 dumps everything (active scenes + DDOL), F9 dumps by name fragment. The only reliable way to capture dynamically-instantiated UI hierarchies — runtime inspection is required because the relevant GameObjects only exist while the panel is open. Should land as a permanent dev tool in production (`mods/console` or similar).
 - **Pill-strip primitive** (`BuildPillStrip(track, fill, fillPct, marginTop)`) — generic gauge widget; stack as many as needed (brake, coupler, future stress indicators). Trivial template for any production gauge cluster.
 - **Reverser column with twin REV/FWD labels** — pattern for sliders that semantically need split labels.
 
 ### Honest gotchas the session surfaced (write down so we don't repeat)
 
-- AssetRipper extraction **does not capture dynamically-instantiated UI**. The CarInspector lives in DontDestroyOnLoad and only exists at runtime. F9 fragment search of the live scene is the only reliable way to find it.
+- **Dynamically-instantiated UI is invisible to any static introspection** — the CarInspector lives in `DontDestroyOnLoad` and only exists once the panel has been opened in a live session. F9 fragment search of the running scene is the only reliable way to find it; runtime inspection is mandatory for this class of UI.
 - **DDOL scene must be walked separately** — `SceneManager.GetSceneAt(i)` doesn't include it. Trick: create a temp GameObject, mark `DontDestroyOnLoad`, then `temp.scene.GetRootGameObjects()`.
 - **Vanilla GameObject names can be the full type name** (e.g., `UI.CarInspector.CarInspector`). Search by name fragment, not exact match.
 - **Legacy `UnityEngine.Input.GetKeyDown` is often a no-op** when the new InputSystem is the active handler. Use `Keyboard.current.fXKey.wasPressedThisFrame` instead. (Wasn't actually needed here in the end — the legacy API worked — but worth knowing.)
