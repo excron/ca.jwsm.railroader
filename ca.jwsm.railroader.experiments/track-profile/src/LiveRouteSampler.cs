@@ -80,6 +80,7 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             dest.LengthFt          = 1e7f;            // any large value; we use distFt = 0 as the head
             dest.MapMaxGradePct    = 4.5f;            // TODO: cache from Graph at MapDidLoad
             dest.InitialHeadPositionFt = 0f;
+            dest.SelectedLocoLabel = loco.DisplayName ?? loco.id ?? "";
 
             // ---- Consist ----
             // We need to yield cars in TAIL→HEAD order so the renderer can
@@ -129,11 +130,65 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             SampleGradesAlongRoute(graph, leadingLoc, dest, startFt, endFt);
 
             // ---- Annotations ----
-            // Live annotation discovery (signals/switches/stations) is more
-            // involved; deferring to a follow-up. Empty list for now.
-            // dest.Annotations is already cleared by Reset().
+            // First POI type: switches detected by walking the route and
+            // recording each transition between adjacent track segments
+            // whose connecting node has 3 connections (per Graph.IsSwitch).
+            // Signals/stations/industries are deferred — those need either
+            // scene-side indexing or world-position-to-route projection,
+            // which is more involved.
+            SampleSwitchesAlongRoute(graph, leadingLoc, dest, startFt, endFt);
 
             return true;
+        }
+
+        /// <summary>
+        /// Walk the route at SampleStepFt resolution and record an annotation
+        /// at every segment transition where the connecting node is a switch.
+        /// Distance precision is the step size (~50 ft) — fine for visual
+        /// markers that just need to land near the right spot.
+        /// </summary>
+        private static void SampleSwitchesAlongRoute(
+            Graph graph,
+            Location leadingLoc,
+            RouteData dest,
+            float startFt,
+            float endFt)
+        {
+            var step = SampleStepFt;
+            TrackSegment prevSeg = null;
+            TrackNode lastSwitchNode = null;       // dedup back-and-forth zigzags
+
+            for (float distFt = startFt; distFt <= endFt; distFt += step)
+            {
+                var loc = TryMove(graph, leadingLoc, distFt * MetersPerFoot);
+                if (!loc.HasValue) break;
+                var seg = loc.Value.segment;
+                if (seg == null) { prevSeg = null; continue; }
+
+                if (prevSeg != null && seg != prevSeg)
+                {
+                    // Find the node shared between prevSeg and seg.
+                    TrackNode crossed = null;
+                    if (prevSeg.a != null && (prevSeg.a == seg.a || prevSeg.a == seg.b)) crossed = prevSeg.a;
+                    else if (prevSeg.b != null && (prevSeg.b == seg.a || prevSeg.b == seg.b)) crossed = prevSeg.b;
+
+                    if (crossed != null && crossed != lastSwitchNode && graph.IsSwitch(crossed))
+                    {
+                        dest.Annotations.Add(new RouteData.Annotation
+                        {
+                            Type   = "switch",
+                            DistFt = distFt,
+                            Label  = crossed.id ?? "SW",
+                        });
+                        lastSwitchNode = crossed;
+                    }
+                    else if (crossed != null && !graph.IsSwitch(crossed))
+                    {
+                        lastSwitchNode = null;     // reset dedup outside of switch territory
+                    }
+                }
+                prevSeg = seg;
+            }
         }
 
         /// <summary>

@@ -20,7 +20,6 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
         // Visual constants in 1× scale pixels
         private const float CarHeightPx = 14f;
         private const float CarGapPx = 1f;
-        private const float LabelMinCarWidthPx = 28f;  // hide labels on cars narrower than this
 
         private readonly Theme _theme;
         private readonly RouteData _route;
@@ -28,7 +27,7 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
 
         private VisualElement _container;
         private readonly List<VisualElement> _carBoxes = new List<VisualElement>();
-        private readonly List<Label> _carLabels = new List<Label>();
+        private Label _consistLabel;
 
         public VehicleRow(Theme theme, RouteData route, float uiScale = 1f)
         {
@@ -49,19 +48,32 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             _container.style.bottom = 0;
             _container.pickingMode = PickingMode.Ignore;
 
+            // Single label spanning the full consist width — typically the
+            // selected locomotive's reporting mark + road number. Per-car
+            // labels were dropped because they collide on long trains and
+            // most cars don't have meaningful unique IDs at a glance.
+            _consistLabel = new Label("");
+            _consistLabel.style.position = Position.Absolute;
+            _consistLabel.style.color = _theme.TextPrimary;
+            _consistLabel.style.fontSize = S(11);
+            _consistLabel.style.unityTextAlign = TextAnchor.MiddleCenter;
+            _consistLabel.style.unityFontStyleAndWeight = FontStyle.Bold;
+            _consistLabel.style.height = S(12);
+            _consistLabel.pickingMode = PickingMode.Ignore;
+            _container.Add(_consistLabel);
+
             EnsureBoxesMatchConsist();
             return _container;
         }
 
         /// <summary>
-        /// Reconcile internal box+label list with the current consist size.
+        /// Reconcile internal box list with the current consist size.
         /// Called from Update() so live-data refreshes (coupling/uncoupling)
         /// don't leave dangling or missing slots. Cheap when count is stable.
         /// </summary>
         private void EnsureBoxesMatchConsist()
         {
             var n = _route.Consist.Count;
-            // Add new boxes if consist grew
             while (_carBoxes.Count < n)
             {
                 var box = new VisualElement();
@@ -82,23 +94,10 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
                 box.pickingMode = PickingMode.Ignore;
                 _container.Add(box);
                 _carBoxes.Add(box);
-
-                var lbl = new Label("");
-                lbl.style.position = Position.Absolute;
-                lbl.style.color = _theme.TextPrimary;
-                lbl.style.fontSize = S(9);
-                lbl.style.unityTextAlign = TextAnchor.MiddleCenter;
-                lbl.style.height = S(10);
-                lbl.pickingMode = PickingMode.Ignore;
-                _container.Add(lbl);
-                _carLabels.Add(lbl);
             }
-            // Hide overflow if consist shrank (don't destroy — pool the elements)
             for (int i = 0; i < _carBoxes.Count; i++)
             {
-                var visible = i < n;
-                _carBoxes[i].style.display = visible ? DisplayStyle.Flex : DisplayStyle.None;
-                _carLabels[i].style.display = visible ? DisplayStyle.Flex : DisplayStyle.None;
+                _carBoxes[i].style.display = i < n ? DisplayStyle.Flex : DisplayStyle.None;
             }
         }
 
@@ -141,11 +140,17 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             var walk = _route.Consist;
 
             float cursorFt = tailFt;
+            // Track the highest screen-y across all cars so the consist
+            // label sits above the highest box (so on uphills, it sits
+            // above the leading car which is highest on screen).
+            float highestTopY = float.MaxValue;
+            float consistLeftPx = float.MaxValue;
+            float consistRightPx = float.MinValue;
+
             for (int i = 0; i < walk.Count; i++)
             {
                 var v = walk[i];
                 var box = _carBoxes[i];
-                var lbl = _carLabels[i];
 
                 var leftFt = cursorFt;
                 var rightFt = cursorFt + v.LengthFt;
@@ -154,10 +159,6 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
                 var rightPx = (rightFt - startFt) * pxPerFt;
                 var widthPx = Mathf.Max(2f, rightPx - leftPx - S(CarGapPx));
 
-                // Vertical: center the car on the line's elevation at the
-                // car's center. With pxPerElevFt = 0 we fall back to the
-                // centerline — matches old behavior so we don't NRE before
-                // chart layout has resolved.
                 var carCenterFt = (leftFt + rightFt) * 0.5f;
                 var elev = _route.ElevationAt(carCenterFt);
                 var carCenterY = (pxPerElevFt > 0f)
@@ -170,20 +171,34 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
                 box.style.top = topY;
                 box.style.backgroundColor = ColorForKind(v.Kind);
 
-                if (widthPx >= S(LabelMinCarWidthPx))
+                if (topY < highestTopY) highestTopY = topY;
+                if (leftPx  < consistLeftPx)  consistLeftPx  = leftPx;
+                if (rightPx > consistRightPx) consistRightPx = rightPx;
+
+                cursorFt = rightFt;
+            }
+
+            // Single consist label centered horizontally over the whole
+            // consist's x-span, sitting just above the highest box.
+            if (_consistLabel != null && walk.Count > 0)
+            {
+                var label = _route.SelectedLocoLabel;
+                if (string.IsNullOrEmpty(label))
                 {
-                    lbl.style.display = DisplayStyle.Flex;
-                    lbl.text = v.ShortName;
-                    lbl.style.left = leftPx;
-                    lbl.style.width = widthPx;
-                    lbl.style.top = topY - S(11);
+                    _consistLabel.style.display = DisplayStyle.None;
                 }
                 else
                 {
-                    lbl.style.display = DisplayStyle.None;
+                    _consistLabel.style.display = DisplayStyle.Flex;
+                    _consistLabel.text = label;
+                    _consistLabel.style.left = consistLeftPx;
+                    _consistLabel.style.width = Mathf.Max(0f, consistRightPx - consistLeftPx);
+                    _consistLabel.style.top = highestTopY - S(13);
                 }
-
-                cursorFt = rightFt;
+            }
+            else if (_consistLabel != null)
+            {
+                _consistLabel.style.display = DisplayStyle.None;
             }
         }
 

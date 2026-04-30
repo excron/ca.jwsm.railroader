@@ -29,6 +29,11 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
         public float CurrentGradePct;
         public float TrainElevationFt;
 
+        // Display label for the selected locomotive (e.g. "BNSF 1234").
+        // Used by VehicleRow to render a single consist-spanning label
+        // instead of per-car labels (which collide on long trains).
+        public string SelectedLocoLabel;
+
         public float TotalConsistLengthFt
         {
             get
@@ -68,6 +73,7 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             Consist.Clear();
             CurrentGradePct = 0f;
             TrainElevationFt = 0f;
+            SelectedLocoLabel = "";
         }
 
         public static RouteData LoadFromFile(string jsonPath)
