@@ -159,7 +159,7 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             if (pxPerFt > 0f)
             {
                 _vehicleRow.Update(_trainHeadFt, pxPerFt, window.StartFt, _reversed, pxPerElevFt);
-                _annotations.Update(pxPerFt, window.StartFt, window.EndFt);
+                _annotations.Update(pxPerFt, window.StartFt, window.EndFt, pxPerElevFt);
             }
         }
     }

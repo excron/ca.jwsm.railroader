@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UIElements;
@@ -5,31 +6,38 @@ using UnityEngine.UIElements;
 namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
 {
     /// <summary>
-    /// Renders annotations along the x-axis: mileposts, switches, signals,
-    /// stations, industries, end-of-line markers. Each annotation is an
-    /// absolutely-positioned glyph + optional label. Visibility is gated on
-    /// whether the annotation falls inside the current ViewWindow.
+    /// Renders POIs (switches, signals, mileposts, etc.) along the chart's
+    /// x-axis. Each POI is a colored dot on a "POI rail" near the bottom of
+    /// the chart with a thin vertical guide line connecting the dot to the
+    /// track line at that x position.
     ///
-    /// Visual layering (high y to low y on screen, top to bottom):
-    ///   - Vehicle row centered on 0% line (rendered separately by VehicleRow)
-    ///   - Switch / signal / station markers float above or below the line
-    ///   - Mileposts as ticks at the bottom edge of the chart with labels
-    ///     beneath
+    /// Color encodings (deliberately muted to live within the charcoal
+    /// theme — pure RGB primaries would shout):
+    ///   Switch normal    → soft white
+    ///   Switch reversed  → muted accent blue
+    ///   Signal clear     → muted success green
+    ///   Signal approach  → muted warning amber
+    ///   Signal stop      → muted danger red
+    ///
+    /// Vertical guide lines: ~1 px wide, low-alpha border color. They visually
+    /// anchor each POI to the spot on the track it represents, regardless of
+    /// where the line is on the chart vertically.
+    ///
+    /// All dots share the same POI rail at the bottom — type is inferred
+    /// from color, not from rail position. Mileposts (when re-introduced
+    /// from live data) get tiny ticks at the very bottom edge.
     /// </summary>
     public sealed class AnnotationLayer
     {
-        private const float MarkerWidthPx = 16f;
-        private const float MarkerHeightPx = 16f;
-        private const float MilepostTickHeightPx = 8f;
+        // Visual constants in 1× scale pixels
+        private const float DotDiameterPx = 7f;
+        private const float POIRailFromBottomPx = 14f;
 
         private readonly Theme _theme;
         private readonly RouteData _route;
         private readonly float _uiScale;
 
         private VisualElement _container;
-        // Pre-built annotation elements (one per route annotation). We toggle
-        // visibility + reposition each Update() rather than rebuilding the
-        // tree, which keeps the per-frame cost trivial.
         private readonly List<AnnotationElement> _elements = new List<AnnotationElement>();
 
         public AnnotationLayer(Theme theme, RouteData route, float uiScale = 1f)
@@ -56,17 +64,13 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
         }
 
         /// <summary>
-        /// Tear down and rebuild internal annotation elements to match the
-        /// current Route.Annotations list. Called when annotations might
-        /// have changed (live-data refreshes, switch overrides discovered
-        /// along route, etc.). Cheap when annotations are stable; we
-        /// short-circuit on identity match.
+        /// Tear down + rebuild internal annotation elements when the route's
+        /// annotation list has changed (different references or count).
+        /// Live-data refresh repopulates the list every 5 Hz so this fires
+        /// frequently, but each element is small and the rebuild is cheap.
         /// </summary>
         private void RebuildElementsFromRoute()
         {
-            // Identity-cheap check: if the list reference + count match,
-            // assume nothing changed. Live-source might mutate the same
-            // list in place — fall back to count check.
             if (_elements.Count == _route.Annotations.Count)
             {
                 bool same = true;
@@ -81,14 +85,12 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
                 if (same) return;
             }
 
-            // Tear down existing
             foreach (var e in _elements)
             {
                 if (e.Root != null && e.Root.parent != null) e.Root.RemoveFromHierarchy();
             }
             _elements.Clear();
 
-            // Rebuild
             foreach (var ann in _route.Annotations)
             {
                 var elem = BuildElementFor(ann);
@@ -100,7 +102,7 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             }
         }
 
-        public void Update(float pxPerFt, float startFt, float endFt)
+        public void Update(float pxPerFt, float startFt, float endFt, float pxPerElevFt)
         {
             if (_container == null || pxPerFt <= 0f) return;
             RebuildElementsFromRoute();
@@ -110,13 +112,19 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             var centerY = rect.height * 0.5f;
             foreach (var elem in _elements)
             {
-                var visible = elem.Annotation.DistFt >= startFt - 50f
-                           && elem.Annotation.DistFt <= endFt + 50f;
+                var ann = elem.Annotation;
+                var visible = ann.DistFt >= startFt - 50f && ann.DistFt <= endFt + 50f;
                 elem.Root.style.display = visible ? DisplayStyle.Flex : DisplayStyle.None;
                 if (!visible) continue;
 
-                var x = (elem.Annotation.DistFt - startFt) * pxPerFt;
-                elem.Position(x, centerY, rect.height, S);
+                var x = (ann.DistFt - startFt) * pxPerFt;
+                // Track-line Y at the POI's distFt — used so the vertical
+                // guide can connect the line itself (which moves with the
+                // grade) to the POI rail (anchored at chart bottom).
+                var lineY = (pxPerElevFt > 0f)
+                    ? centerY - _route.ElevationAt(ann.DistFt) * pxPerElevFt
+                    : centerY;
+                elem.Position(x, centerY, lineY, rect.height, S);
             }
         }
 
@@ -124,9 +132,9 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
         {
             switch ((ann.Type ?? "").ToLowerInvariant())
             {
+                case "switch":     return BuildDot(ann, ColorForSwitch(ann));
+                case "signal":     return BuildDot(ann, ColorForSignal(ann));
                 case "milepost":   return BuildMilepost(ann);
-                case "switch":     return BuildSwitch(ann);
-                case "signal":     return BuildSignal(ann);
                 case "station":    return BuildStation(ann);
                 case "industry":   return BuildIndustry(ann);
                 case "endofline":  return BuildEndOfLine(ann);
@@ -134,10 +142,105 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             }
         }
 
-        // ---- Mileposts ----
-        // Vertical tick at the bottom of the chart. Labeled posts (every
-        // mile) get a text label below the tick; unlabeled (half-mile) ticks
-        // are shorter and unmarked.
+        // ---- Generic colored dot with vertical guide line ----
+
+        private AnnotationElement BuildDot(RouteData.Annotation ann, Color color)
+        {
+            var root = new VisualElement();
+            root.style.position = Position.Absolute;
+            root.pickingMode = PickingMode.Ignore;
+
+            // Vertical guide: thin line connecting the track line to the dot.
+            var guide = new VisualElement();
+            guide.style.position = Position.Absolute;
+            guide.style.width = 1;
+            var guideColor = _theme.Border;
+            guideColor.a *= 0.45f;
+            guide.style.backgroundColor = guideColor;
+            guide.pickingMode = PickingMode.Ignore;
+            root.Add(guide);
+
+            // Filled colored dot on the POI rail.
+            var dot = new VisualElement();
+            dot.style.position = Position.Absolute;
+            var size = S(DotDiameterPx);
+            dot.style.width = size;
+            dot.style.height = size;
+            var r = size * 0.5f;
+            dot.style.borderTopLeftRadius     = r;
+            dot.style.borderTopRightRadius    = r;
+            dot.style.borderBottomLeftRadius  = r;
+            dot.style.borderBottomRightRadius = r;
+            dot.style.backgroundColor = color;
+            // Subtle border for contrast against any background tone.
+            var ring = _theme.Background;
+            ring.a = 0.85f;
+            dot.style.borderTopWidth    = 1;
+            dot.style.borderBottomWidth = 1;
+            dot.style.borderLeftWidth   = 1;
+            dot.style.borderRightWidth  = 1;
+            dot.style.borderTopColor    = ring;
+            dot.style.borderBottomColor = ring;
+            dot.style.borderLeftColor   = ring;
+            dot.style.borderRightColor  = ring;
+            dot.pickingMode = PickingMode.Ignore;
+            root.Add(dot);
+
+            return new AnnotationElement
+            {
+                Annotation = ann,
+                Root = root,
+                Position = (x, centerY, lineY, fullH, scale) =>
+                {
+                    var poiY = fullH - scale(POIRailFromBottomPx);
+                    var dSize = scale(DotDiameterPx);
+                    var dRadius = dSize * 0.5f;
+
+                    // Guide goes between the line's Y and the dot's Y, on
+                    // whichever side the line is. Stops short of the dot so
+                    // it doesn't bisect it.
+                    var guideTop = Mathf.Min(lineY, poiY - dRadius);
+                    var guideBot = Mathf.Max(lineY, poiY - dRadius);
+                    guide.style.left = x;
+                    guide.style.top = guideTop;
+                    guide.style.height = Mathf.Max(0f, guideBot - guideTop);
+
+                    dot.style.left = x - dRadius;
+                    dot.style.top  = poiY - dRadius;
+                }
+            };
+        }
+
+        // ---- Color helpers ----
+
+        /// <summary>
+        /// Slightly desaturate + darken a base aspect color so it lives within
+        /// the charcoal theme without overpowering the chart. Pure FF0000-style
+        /// primaries would shout.
+        /// </summary>
+        private static Color Mute(Color c, float darken = 0.85f, float alpha = 0.95f)
+        {
+            return new Color(c.r * darken, c.g * darken, c.b * darken, alpha);
+        }
+
+        private Color ColorForSwitch(RouteData.Annotation ann)
+        {
+            var reversed = string.Equals(ann.Diverging, "reversed", StringComparison.OrdinalIgnoreCase);
+            return reversed ? Mute(_theme.Accent) : Mute(_theme.TextPrimary);
+        }
+
+        private Color ColorForSignal(RouteData.Annotation ann)
+        {
+            switch ((ann.Aspect ?? "").ToLowerInvariant())
+            {
+                case "clear":    return Mute(_theme.Success);
+                case "approach": return Mute(_theme.Warning);
+                case "stop":     return Mute(_theme.Danger);
+                default:         return Mute(_theme.TextMuted);
+            }
+        }
+
+        // ---- Mileposts (kept; unused on live data for now) ----
 
         private AnnotationElement BuildMilepost(RouteData.Annotation ann)
         {
@@ -149,7 +252,7 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             tick.style.position = Position.Absolute;
             tick.style.width = 1;
             tick.style.backgroundColor = _theme.TextMuted;
-            tick.style.height = ann.Labeled ? S(MilepostTickHeightPx + 2) : S(MilepostTickHeightPx);
+            tick.style.height = ann.Labeled ? S(10) : S(8);
             tick.pickingMode = PickingMode.Ignore;
             root.Add(tick);
 
@@ -170,9 +273,9 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             {
                 Annotation = ann,
                 Root = root,
-                Position = (x, centerY, fullH, scale) =>
+                Position = (x, centerY, lineY, fullH, scale) =>
                 {
-                    var tickH = ann.Labeled ? scale(MilepostTickHeightPx + 2) : scale(MilepostTickHeightPx);
+                    var tickH = ann.Labeled ? scale(10) : scale(8);
                     tick.style.left = x;
                     tick.style.top = fullH - tickH;
                     if (label != null)
@@ -184,97 +287,7 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             };
         }
 
-        // ---- Switches ----
-        // Diamond glyph at the bottom-edge of the chart, with the switch's
-        // identifier label above. Color borrows the theme accent.
-
-        private AnnotationElement BuildSwitch(RouteData.Annotation ann)
-        {
-            var root = new VisualElement();
-            root.style.position = Position.Absolute;
-            root.pickingMode = PickingMode.Ignore;
-
-            var glyph = new Label("◆");
-            glyph.style.position = Position.Absolute;
-            glyph.style.color = _theme.Accent;
-            glyph.style.fontSize = S(11);
-            glyph.style.unityTextAlign = TextAnchor.MiddleCenter;
-            glyph.style.width = S(MarkerWidthPx);
-            glyph.style.height = S(MarkerHeightPx);
-            glyph.pickingMode = PickingMode.Ignore;
-            root.Add(glyph);
-
-            var label = new Label(ann.Label);
-            label.style.position = Position.Absolute;
-            label.style.color = _theme.Accent;
-            label.style.fontSize = S(8);
-            label.style.unityTextAlign = TextAnchor.MiddleCenter;
-            label.style.width = S(40);
-            label.pickingMode = PickingMode.Ignore;
-            root.Add(label);
-
-            return new AnnotationElement
-            {
-                Annotation = ann,
-                Root = root,
-                Position = (x, centerY, fullH, scale) =>
-                {
-                    var glyphSize = scale(MarkerHeightPx);
-                    glyph.style.left = x - glyphSize * 0.5f;
-                    glyph.style.top = fullH - glyphSize - scale(2);
-                    label.style.left = x - scale(20);
-                    label.style.top = fullH - glyphSize - scale(11);
-                }
-            };
-        }
-
-        // ---- Signals ----
-        // Filled circle at the top of the chart, color-coded by aspect.
-
-        private AnnotationElement BuildSignal(RouteData.Annotation ann)
-        {
-            var root = new VisualElement();
-            root.style.position = Position.Absolute;
-            root.pickingMode = PickingMode.Ignore;
-
-            var dot = new VisualElement();
-            dot.style.position = Position.Absolute;
-            dot.style.width = S(8);
-            dot.style.height = S(8);
-            dot.style.borderTopLeftRadius = S(4);
-            dot.style.borderTopRightRadius = S(4);
-            dot.style.borderBottomLeftRadius = S(4);
-            dot.style.borderBottomRightRadius = S(4);
-            dot.style.backgroundColor = ColorForAspect(ann.Aspect);
-            dot.pickingMode = PickingMode.Ignore;
-            root.Add(dot);
-
-            return new AnnotationElement
-            {
-                Annotation = ann,
-                Root = root,
-                Position = (x, centerY, fullH, scale) =>
-                {
-                    var size = scale(8);
-                    dot.style.left = x - size * 0.5f;
-                    dot.style.top = scale(2);
-                }
-            };
-        }
-
-        private Color ColorForAspect(string aspect)
-        {
-            switch ((aspect ?? "").ToLowerInvariant())
-            {
-                case "clear":    return _theme.Success;
-                case "approach": return _theme.Warning;
-                case "stop":     return _theme.Danger;
-                default:         return _theme.TextMuted;
-            }
-        }
-
-        // ---- Stations ----
-        // Vertical accent line spanning chart height, with station name above.
+        // ---- Stations / industries / EOL (kept for future live wiring) ----
 
         private AnnotationElement BuildStation(RouteData.Annotation ann)
         {
@@ -305,7 +318,7 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             {
                 Annotation = ann,
                 Root = root,
-                Position = (x, centerY, fullH, scale) =>
+                Position = (x, centerY, lineY, fullH, scale) =>
                 {
                     line.style.left = x;
                     line.style.top = scale(14);
@@ -315,10 +328,6 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
                 }
             };
         }
-
-        // ---- Industries ----
-        // Square glyph at the bottom of the chart with industry name label.
-        // Visually quieter than stations.
 
         private AnnotationElement BuildIndustry(RouteData.Annotation ann)
         {
@@ -330,11 +339,7 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             glyph.style.position = Position.Absolute;
             glyph.style.width = S(8);
             glyph.style.height = S(8);
-            glyph.style.backgroundColor = _theme.Warning;
-            glyph.style.borderTopLeftRadius = S(1);
-            glyph.style.borderTopRightRadius = S(1);
-            glyph.style.borderBottomLeftRadius = S(1);
-            glyph.style.borderBottomRightRadius = S(1);
+            glyph.style.backgroundColor = Mute(_theme.Warning);
             glyph.pickingMode = PickingMode.Ignore;
             root.Add(glyph);
 
@@ -351,7 +356,7 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             {
                 Annotation = ann,
                 Root = root,
-                Position = (x, centerY, fullH, scale) =>
+                Position = (x, centerY, lineY, fullH, scale) =>
                 {
                     glyph.style.left = x - scale(4);
                     glyph.style.top = fullH - scale(20);
@@ -360,9 +365,6 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
                 }
             };
         }
-
-        // ---- End of line ----
-        // Bold red vertical line spanning full chart height with "END" label.
 
         private AnnotationElement BuildEndOfLine(RouteData.Annotation ann)
         {
@@ -373,7 +375,7 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             var line = new VisualElement();
             line.style.position = Position.Absolute;
             line.style.width = S(2);
-            line.style.backgroundColor = _theme.Danger;
+            line.style.backgroundColor = Mute(_theme.Danger);
             line.pickingMode = PickingMode.Ignore;
             root.Add(line);
 
@@ -391,7 +393,7 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             {
                 Annotation = ann,
                 Root = root,
-                Position = (x, centerY, fullH, scale) =>
+                Position = (x, centerY, lineY, fullH, scale) =>
                 {
                     line.style.left = x;
                     line.style.top = 0;
@@ -406,10 +408,10 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
         {
             public RouteData.Annotation Annotation;
             public VisualElement Root;
-            // Caller invokes Position(x, centerY, fullH, S) every Update() to
-            // re-place the element. The closure captures the inner Visual
-            // Elements built once at Build() time.
-            public System.Action<float, float, float, System.Func<float, float>> Position;
+            // Caller invokes Position(x, centerY, lineY, fullH, scale) per
+            // refresh. lineY is the track line's local-y at the annotation's
+            // distFt — used by POI types that draw a vertical guide.
+            public Action<float, float, float, float, Func<float, float>> Position;
         }
     }
 }

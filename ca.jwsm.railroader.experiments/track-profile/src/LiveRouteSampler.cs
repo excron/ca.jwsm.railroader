@@ -1,6 +1,8 @@
+using System.Collections.Generic;
 using Model;
 using Model.Definition;
 using Track;
+using Track.Signals;
 using UnityEngine;
 
 namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
@@ -36,13 +38,20 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
         // and fall back to last-known direction. ~0.022 m/s = ~0.05 mph.
         private const float StoppedVelocityThreshold = 0.05f;
 
+        // World-space distance (meters) within which a signal is considered
+        // "on the route" — should exceed the step size (50 ft = ~15 m) so
+        // signals between adjacent steps still match.
+        private const float SignalProximityThresholdM = 18f;
+
         /// <summary>
-        /// Per-frame state remembered across calls so we can pick a sensible
-        /// direction when stopped.
+        /// Per-frame state remembered across calls. Includes the last-known
+        /// direction (for hysteresis when stopped) and the cached scene
+        /// list of signals (avoids per-refresh FindObjectsOfType cost).
         /// </summary>
         public sealed class State
         {
             public bool LastReversed;
+            public List<CTCSignal> CachedSignals;
         }
 
         /// <summary>
@@ -127,47 +136,86 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             // graph returns world-space positions (meters), Y is altitude.
             var startFt = -consistLengthFt - BehindFt;
             var endFt   = LookaheadFt;
-            SampleGradesAlongRoute(graph, leadingLoc, dest, startFt, endFt);
 
-            // ---- Annotations ----
-            // First POI type: switches detected by walking the route and
-            // recording each transition between adjacent track segments
-            // whose connecting node has 3 connections (per Graph.IsSwitch).
-            // Signals/stations/industries are deferred — those need either
-            // scene-side indexing or world-position-to-route projection,
-            // which is more involved.
-            SampleSwitchesAlongRoute(graph, leadingLoc, dest, startFt, endFt);
+            // Reference: train head's absolute elevation (meters → feet).
+            // Stored on the dataset and subtracted from each per-step elev
+            // to give chart-friendly head-relative samples.
+            var trainElevFt = graph.GetPosition(leadingLoc).y * FeetPerMeter;
+            dest.TrainElevationFt = trainElevFt;
 
+            // Walk the route ONCE, materializing (distFt, location, world
+            // position) for every step. Grade samples, switch detection,
+            // and signal proximity all consume this list.
+            var stepList = WalkRoute(graph, leadingLoc, startFt, endFt);
+            if (stepList.Count == 0) return false;
+
+            FillElevationSamples(dest, stepList, trainElevFt);
+            DetectSwitchAnnotations(graph, dest, stepList);
+            DetectSignalAnnotations(state, dest, stepList);
+
+            dest.CurrentGradePct = dest.GradeAt(0f);
             return true;
         }
 
         /// <summary>
-        /// Walk the route at SampleStepFt resolution and record an annotation
-        /// at every segment transition where the connecting node is a switch.
-        /// Distance precision is the step size (~50 ft) — fine for visual
-        /// markers that just need to land near the right spot.
+        /// Walk the route from leadingLoc by SampleStepFt-sized hops over
+        /// [startFt, endFt]. Returns a list of (distFt, location, world
+        /// position) tuples used by every sampling pass below.
         /// </summary>
-        private static void SampleSwitchesAlongRoute(
-            Graph graph,
-            Location leadingLoc,
-            RouteData dest,
-            float startFt,
-            float endFt)
+        private static List<RouteStep> WalkRoute(
+            Graph graph, Location leadingLoc, float startFt, float endFt)
         {
             var step = SampleStepFt;
-            TrackSegment prevSeg = null;
-            TrackNode lastSwitchNode = null;       // dedup back-and-forth zigzags
+            int steps = Mathf.Max(2, Mathf.CeilToInt((endFt - startFt) / step) + 1);
+            var list = new List<RouteStep>(steps);
 
-            for (float distFt = startFt; distFt <= endFt; distFt += step)
+            float distFt = startFt;
+            for (int i = 0; i < steps; i++, distFt += step)
             {
                 var loc = TryMove(graph, leadingLoc, distFt * MetersPerFoot);
                 if (!loc.HasValue) break;
-                var seg = loc.Value.segment;
+                list.Add(new RouteStep
+                {
+                    DistFt   = distFt,
+                    Location = loc.Value,
+                    WorldPos = graph.GetPosition(loc.Value),
+                });
+            }
+            return list;
+        }
+
+        private struct RouteStep
+        {
+            public float    DistFt;
+            public Location Location;
+            public Vector3  WorldPos;
+        }
+
+        /// <summary>
+        /// Detect switches by scanning segment transitions in the step list.
+        /// At each transition, find the connecting TrackNode; if it's a
+        /// switch, record an annotation. Switch state (normal vs reversed)
+        /// comes from TrackNode.isThrown — false = normal/straight, true =
+        /// thrown/diverging.
+        ///
+        /// The route projection itself follows the currently-lined direction
+        /// (LocationByMoving walks the lined route), so when the player
+        /// throws a switch, the next refresh produces a different stepList
+        /// and the new lined elevation profile + downstream switches show
+        /// up automatically.
+        /// </summary>
+        private static void DetectSwitchAnnotations(
+            Graph graph, RouteData dest, List<RouteStep> stepList)
+        {
+            TrackSegment prevSeg = null;
+            TrackNode lastSwitchNode = null;
+            for (int i = 0; i < stepList.Count; i++)
+            {
+                var seg = stepList[i].Location.segment;
                 if (seg == null) { prevSeg = null; continue; }
 
                 if (prevSeg != null && seg != prevSeg)
                 {
-                    // Find the node shared between prevSeg and seg.
                     TrackNode crossed = null;
                     if (prevSeg.a != null && (prevSeg.a == seg.a || prevSeg.a == seg.b)) crossed = prevSeg.a;
                     else if (prevSeg.b != null && (prevSeg.b == seg.a || prevSeg.b == seg.b)) crossed = prevSeg.b;
@@ -176,15 +224,15 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
                     {
                         dest.Annotations.Add(new RouteData.Annotation
                         {
-                            Type   = "switch",
-                            DistFt = distFt,
-                            Label  = crossed.id ?? "SW",
+                            Type      = "switch",
+                            DistFt    = stepList[i].DistFt,
+                            Diverging = crossed.isThrown ? "reversed" : "normal",
                         });
                         lastSwitchNode = crossed;
                     }
                     else if (crossed != null && !graph.IsSwitch(crossed))
                     {
-                        lastSwitchNode = null;     // reset dedup outside of switch territory
+                        lastSwitchNode = null;
                     }
                 }
                 prevSeg = seg;
@@ -192,76 +240,116 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
         }
 
         /// <summary>
-        /// Sample elevation + grade at SampleStepFt intervals from
-        /// (head + startFt) to (head + endFt). Both fields are populated on
-        /// each GradeSample:
-        ///   - ElevationFtRel: feet above/below the train head's current elev.
-        ///     The chart plots this as the track line.
-        ///   - GradePct: local slope between this sample and the previous,
-        ///     in percent. Used for the grade readout.
+        /// Discover signals near the route. For each cached CTCSignal, find
+        /// the route step closest to the signal's world position. If that
+        /// step is within SignalProximityThresholdM, record an annotation
+        /// at that step's distFt with the signal's current aspect.
         ///
-        /// The reference elevation is sampled FIRST at the train head
-        /// (distFt = 0); subsequent samples subtract that to get relative.
-        ///
-        /// We use Graph.LocationByMoving with Clamp end-of-track handling so
-        /// running off the rails doesn't throw — the location pins at the
-        /// end and subsequent samples flatline at the EOT elevation.
+        /// Aspect is queried via the signal's parent SignalStorage's public
+        /// GetSignalAspect(id) — the protected Storage field on CTCSignal
+        /// isn't accessible from outside the assembly, but
+        /// GetComponentInParent reaches the same singleton.
         /// </summary>
-        private static void SampleGradesAlongRoute(
-            Graph graph,
-            Location leadingLoc,
-            RouteData dest,
-            float startFt,
-            float endFt)
+        private static void DetectSignalAnnotations(
+            State state, RouteData dest, List<RouteStep> stepList)
         {
-            // Reference: train head's absolute elevation (meters → feet).
-            var trainElevM = graph.GetPosition(leadingLoc).y;
-            var trainElevFt = trainElevM * FeetPerMeter;
-            dest.TrainElevationFt = trainElevFt;
+            if (state.CachedSignals == null)
+            {
+                state.CachedSignals = new List<CTCSignal>(
+                    Object.FindObjectsOfType<CTCSignal>());
+            }
+            if (state.CachedSignals.Count == 0) return;
 
-            var step = SampleStepFt;
-            int steps = Mathf.Max(2, Mathf.CeilToInt((endFt - startFt) / step) + 1);
+            var thresholdSq = SignalProximityThresholdM * SignalProximityThresholdM;
+            for (int i = 0; i < state.CachedSignals.Count; i++)
+            {
+                var sig = state.CachedSignals[i];
+                if (sig == null) continue;
+                var sigPos = sig.transform.position;
 
-            float distFt = startFt;
-            var loc = TryMove(graph, leadingLoc, distFt * MetersPerFoot);
-            if (!loc.HasValue) return;
+                float bestSq = thresholdSq;
+                float bestDistFt = 0f;
+                bool found = false;
+                for (int s = 0; s < stepList.Count; s++)
+                {
+                    var d = (sigPos - stepList[s].WorldPos).sqrMagnitude;
+                    if (d < bestSq)
+                    {
+                        bestSq = d;
+                        bestDistFt = stepList[s].DistFt;
+                        found = true;
+                    }
+                }
+                if (!found) continue;
 
-            float prevYm = graph.GetPosition(loc.Value).y;
-            float prevDistFt = distFt;
+                var aspect = GetSignalAspect(sig);
+                dest.Annotations.Add(new RouteData.Annotation
+                {
+                    Type   = "signal",
+                    DistFt = bestDistFt,
+                    Aspect = AspectToKey(aspect),
+                });
+            }
+        }
 
+        private static SignalAspect GetSignalAspect(CTCSignal sig)
+        {
+            // SignalStorage is a parent MonoBehaviour the signal can find via
+            // GetComponentInParent. Its GetSignalAspect(id) is public.
+            var storage = sig.GetComponentInParent<SignalStorage>();
+            if (storage == null) return SignalAspect.Stop;
+            return storage.GetSignalAspect(sig.id);
+        }
+
+        private static string AspectToKey(SignalAspect a)
+        {
+            switch (a)
+            {
+                case SignalAspect.Clear:             return "clear";
+                case SignalAspect.Approach:          return "approach";
+                case SignalAspect.DivergingApproach: return "approach";
+                case SignalAspect.DivergingClear:    return "approach";
+                case SignalAspect.Restricting:       return "approach";
+                case SignalAspect.Stop:
+                default:                             return "stop";
+            }
+        }
+
+        /// <summary>
+        /// Materialize (distFt, GradePct, ElevationFtRel) for every step
+        /// into RouteData.Samples. Grade is computed pairwise; first sample
+        /// gets 0 by definition.
+        /// </summary>
+        private static void FillElevationSamples(
+            RouteData dest, List<RouteStep> stepList, float trainElevFt)
+        {
+            float prevYm = stepList[0].WorldPos.y;
+            float prevDistFt = stepList[0].DistFt;
             dest.Samples.Add(new RouteData.GradeSample
             {
-                DistFt         = distFt,
+                DistFt         = prevDistFt,
                 GradePct       = 0f,
                 ElevationFtRel = (prevYm * FeetPerMeter) - trainElevFt,
             });
 
-            for (int i = 1; i < steps; i++)
+            for (int i = 1; i < stepList.Count; i++)
             {
-                distFt += step;
-                var nextLoc = TryMove(graph, leadingLoc, distFt * MetersPerFoot);
-                if (!nextLoc.HasValue) break;
-
-                var thisYm = graph.GetPosition(nextLoc.Value).y;
-                var horizontalM = (distFt - prevDistFt) * MetersPerFoot;
+                var s = stepList[i];
+                var thisYm = s.WorldPos.y;
+                var horizontalM = (s.DistFt - prevDistFt) * MetersPerFoot;
                 var verticalM = thisYm - prevYm;
                 var grade = (horizontalM > 0.0001f) ? (verticalM / horizontalM) * 100f : 0f;
 
                 dest.Samples.Add(new RouteData.GradeSample
                 {
-                    DistFt         = distFt,
+                    DistFt         = s.DistFt,
                     GradePct       = grade,
                     ElevationFtRel = (thisYm * FeetPerMeter) - trainElevFt,
                 });
 
                 prevYm = thisYm;
-                prevDistFt = distFt;
+                prevDistFt = s.DistFt;
             }
-
-            // Current grade at the train head: interpolate from the bracketing
-            // samples around distFt = 0. Cheap — most lookahead window has
-            // distFt = 0 inside it.
-            dest.CurrentGradePct = dest.GradeAt(0f);
         }
 
         private static Location? TryMove(Graph graph, Location start, float distanceMeters)
