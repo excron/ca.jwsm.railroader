@@ -27,6 +27,7 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
     public static class LiveRouteSampler
     {
         public const float MetersPerFoot = 0.3048f;
+        public const float FeetPerMeter  = 1f / MetersPerFoot;
         public const float SampleStepFt = 50f;
         public const float LookaheadFt = 5280f;
         public const float BehindFt = 200f;
@@ -81,15 +82,26 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             dest.InitialHeadPositionFt = 0f;
 
             // ---- Consist ----
-            // EnumerateCoupled yields the entire connected consist in
-            // integration-set order. We walk it and record vehicles ordered
-            // tail→head from the LEADING end's perspective.
+            // We need to yield cars in TAIL→HEAD order so the renderer can
+            // walk them left→right with the leading end (head) on the right.
             //
-            // For first cut we just take EnumerateCoupled(LogicalEnd.A) which
-            // gives a stable order. Reverser-flip in the existing renderer
-            // handles the visual flip so engines end up on the correct side.
+            // Mapping from Car.End / direction-of-travel to IntegrationSet
+            // LogicalEnd:
+            //   leading = F if !reversed, R if reversed
+            //   FrontIsA controls how F/R align with set's A/B:
+            //     FrontIsA=true  → F=A, R=B
+            //     FrontIsA=false → F=B, R=A
+            //
+            // EnumerateCoupled(LogicalEnd.A) yields cars in A→B order.
+            // EnumerateCoupled(LogicalEnd.B) yields cars in B→A order.
+            //
+            // To get tail→head: enumerate FROM the trailing logical end, which
+            // is the OPPOSITE of the leading logical end.
+            var leadingLogical = (loco.FrontIsA != reversed) ? Car.LogicalEnd.A : Car.LogicalEnd.B;
+            var tailEnumerateFrom = (leadingLogical == Car.LogicalEnd.A) ? Car.LogicalEnd.B : Car.LogicalEnd.A;
+
             float consistLengthFt = 0f;
-            foreach (var car in loco.EnumerateCoupled(Car.LogicalEnd.A))
+            foreach (var car in loco.EnumerateCoupled(tailEnumerateFrom))
             {
                 var def = car.Definition;
                 var lengthM = def?.Length ?? 12f;     // fallback ~40ft if unknown
@@ -125,13 +137,20 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
         }
 
         /// <summary>
-        /// Sample grade % at SampleStepFt intervals from (head + startFt) to
-        /// (head + endFt). For each pair of adjacent location-on-track, the
-        /// grade is (Δy / Δhorizontal) × 100, with Y from Graph.GetPosition.
+        /// Sample elevation + grade at SampleStepFt intervals from
+        /// (head + startFt) to (head + endFt). Both fields are populated on
+        /// each GradeSample:
+        ///   - ElevationFtRel: feet above/below the train head's current elev.
+        ///     The chart plots this as the track line.
+        ///   - GradePct: local slope between this sample and the previous,
+        ///     in percent. Used for the grade readout.
+        ///
+        /// The reference elevation is sampled FIRST at the train head
+        /// (distFt = 0); subsequent samples subtract that to get relative.
         ///
         /// We use Graph.LocationByMoving with Clamp end-of-track handling so
-        /// running off the rails doesn't throw — the location pins at the end
-        /// and subsequent samples report 0% grade (a flatline at the EOT).
+        /// running off the rails doesn't throw — the location pins at the
+        /// end and subsequent samples flatline at the EOT elevation.
         /// </summary>
         private static void SampleGradesAlongRoute(
             Graph graph,
@@ -140,25 +159,27 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             float startFt,
             float endFt)
         {
-            // Pre-compute the two end Locations (start + end) by moving from
-            // leadingLoc by their respective distances. Then sample inclusive.
-            //
-            // Note: LocationByMoving accepts negative distance (walks
-            // backward). That's the natural way to get behind-train samples.
+            // Reference: train head's absolute elevation (meters → feet).
+            var trainElevM = graph.GetPosition(leadingLoc).y;
+            var trainElevFt = trainElevM * FeetPerMeter;
+            dest.TrainElevationFt = trainElevFt;
+
             var step = SampleStepFt;
             int steps = Mathf.Max(2, Mathf.CeilToInt((endFt - startFt) / step) + 1);
 
-            // We get position-by-position: at each iteration we hold a
-            // location and sample at it, then advance by `step` for the next
-            // iteration.
             float distFt = startFt;
             var loc = TryMove(graph, leadingLoc, distFt * MetersPerFoot);
             if (!loc.HasValue) return;
 
-            float prevY = graph.GetPosition(loc.Value).y;
+            float prevYm = graph.GetPosition(loc.Value).y;
             float prevDistFt = distFt;
-            // First sample: zero grade by definition (no preceding sample).
-            dest.Samples.Add(new RouteData.GradeSample { DistFt = distFt, GradePct = 0f });
+
+            dest.Samples.Add(new RouteData.GradeSample
+            {
+                DistFt         = distFt,
+                GradePct       = 0f,
+                ElevationFtRel = (prevYm * FeetPerMeter) - trainElevFt,
+            });
 
             for (int i = 1; i < steps; i++)
             {
@@ -166,16 +187,26 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
                 var nextLoc = TryMove(graph, leadingLoc, distFt * MetersPerFoot);
                 if (!nextLoc.HasValue) break;
 
-                var thisY = graph.GetPosition(nextLoc.Value).y;
+                var thisYm = graph.GetPosition(nextLoc.Value).y;
                 var horizontalM = (distFt - prevDistFt) * MetersPerFoot;
-                var verticalM = thisY - prevY;
+                var verticalM = thisYm - prevYm;
                 var grade = (horizontalM > 0.0001f) ? (verticalM / horizontalM) * 100f : 0f;
 
-                dest.Samples.Add(new RouteData.GradeSample { DistFt = distFt, GradePct = grade });
+                dest.Samples.Add(new RouteData.GradeSample
+                {
+                    DistFt         = distFt,
+                    GradePct       = grade,
+                    ElevationFtRel = (thisYm * FeetPerMeter) - trainElevFt,
+                });
 
-                prevY = thisY;
+                prevYm = thisYm;
                 prevDistFt = distFt;
             }
+
+            // Current grade at the train head: interpolate from the bracketing
+            // samples around distFt = 0. Cheap — most lookahead window has
+            // distFt = 0 inside it.
+            dest.CurrentGradePct = dest.GradeAt(0f);
         }
 
         private static Location? TryMove(Graph graph, Location start, float distanceMeters)

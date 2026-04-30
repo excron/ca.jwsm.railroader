@@ -133,12 +133,12 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             var totalLenFt = _route.TotalConsistLengthFt;
             var tailFt = headFt - totalLenFt;
 
-            // Walk the consist tail→head left→right always. When reversed,
-            // we walk the consist list in REVERSE order so the loco ends up
-            // on the left visually — the consist's geographic span doesn't
-            // change.
-            var walk = new List<RouteData.Vehicle>(_route.Consist);
-            if (reversed) walk.Reverse();
+            // The Consist list is already in tail→head order — the live
+            // sampler produces it that way (using FrontIsA + reversed to
+            // pick the right EnumerateCoupled direction). We just walk
+            // left→right rendering. The `reversed` parameter is unused
+            // here today; kept for future use (direction indicator etc.).
+            var walk = _route.Consist;
 
             float cursorFt = tailFt;
             for (int i = 0; i < walk.Count; i++)

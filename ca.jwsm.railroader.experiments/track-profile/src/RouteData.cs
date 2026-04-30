@@ -23,6 +23,12 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
         public List<Vehicle>      Consist;
         public float              InitialHeadPositionFt;
 
+        // Live-data fields populated by the sampler each refresh.
+        // Used by the chart's grade readouts; the ChartView itself plots
+        // ElevationFtRel for the line.
+        public float CurrentGradePct;
+        public float TrainElevationFt;
+
         public float TotalConsistLengthFt
         {
             get
@@ -60,6 +66,8 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             Samples.Clear();
             Annotations.Clear();
             Consist.Clear();
+            CurrentGradePct = 0f;
+            TrainElevationFt = 0f;
         }
 
         public static RouteData LoadFromFile(string jsonPath)
@@ -117,7 +125,6 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             if (distFt <= Samples[0].DistFt) return Samples[0].GradePct;
             if (distFt >= Samples[Samples.Count - 1].DistFt) return Samples[Samples.Count - 1].GradePct;
 
-            // Binary search for the bracketing pair.
             int lo = 0, hi = Samples.Count - 1;
             while (hi - lo > 1)
             {
@@ -132,12 +139,40 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             return Mathf.Lerp(a.GradePct, b.GradePct, t);
         }
 
+        /// <summary>
+        /// Returns the interpolated elevation (ft, relative to the train head's
+        /// current elevation) at distFt. Used by the chart's track-line and
+        /// fill rendering. Centered on 0 at the train head (distFt = 0).
+        /// </summary>
+        public float ElevationAt(float distFt)
+        {
+            if (Samples.Count == 0) return 0f;
+            if (distFt <= Samples[0].DistFt) return Samples[0].ElevationFtRel;
+            if (distFt >= Samples[Samples.Count - 1].DistFt) return Samples[Samples.Count - 1].ElevationFtRel;
+
+            int lo = 0, hi = Samples.Count - 1;
+            while (hi - lo > 1)
+            {
+                int mid = (lo + hi) / 2;
+                if (Samples[mid].DistFt <= distFt) lo = mid;
+                else hi = mid;
+            }
+
+            var a = Samples[lo];
+            var b = Samples[hi];
+            var t = (distFt - a.DistFt) / (b.DistFt - a.DistFt);
+            return Mathf.Lerp(a.ElevationFtRel, b.ElevationFtRel, t);
+        }
+
         // ---- Runtime types (clean shape for rendering) ----
 
         public struct GradeSample
         {
             public float DistFt;
             public float GradePct;
+            // Elevation in feet, relative to train head's current elevation.
+            // 0 at the train head, positive when terrain is higher there.
+            public float ElevationFtRel;
         }
 
         public sealed class Annotation
