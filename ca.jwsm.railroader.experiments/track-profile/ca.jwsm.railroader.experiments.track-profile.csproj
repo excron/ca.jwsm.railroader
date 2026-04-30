@@ -58,6 +58,10 @@
       <HintPath>$(ManagedDir)\Assembly-CSharp.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="Definition">
+      <HintPath>$(ManagedDir)\Definition.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="Unity.TextMeshPro">
       <HintPath>$(ManagedDir)\Unity.TextMeshPro.dll</HintPath>
       <Private>false</Private>

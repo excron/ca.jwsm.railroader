@@ -49,15 +49,24 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             _container.style.bottom = 0;
             _container.pickingMode = PickingMode.Ignore;
 
-            // Build one box + one label per vehicle. Layout is recomputed
-            // every Update() — boxes are positioned absolutely.
-            for (int i = 0; i < _route.Consist.Count; i++)
+            EnsureBoxesMatchConsist();
+            return _container;
+        }
+
+        /// <summary>
+        /// Reconcile internal box+label list with the current consist size.
+        /// Called from Update() so live-data refreshes (coupling/uncoupling)
+        /// don't leave dangling or missing slots. Cheap when count is stable.
+        /// </summary>
+        private void EnsureBoxesMatchConsist()
+        {
+            var n = _route.Consist.Count;
+            // Add new boxes if consist grew
+            while (_carBoxes.Count < n)
             {
-                var v = _route.Consist[i];
                 var box = new VisualElement();
                 box.style.position = Position.Absolute;
                 box.style.height = S(CarHeightPx);
-                box.style.backgroundColor = ColorForKind(v.Kind);
                 box.style.borderTopLeftRadius = S(2);
                 box.style.borderTopRightRadius = S(2);
                 box.style.borderBottomLeftRadius = S(2);
@@ -74,7 +83,7 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
                 _container.Add(box);
                 _carBoxes.Add(box);
 
-                var lbl = new Label(v.ShortName);
+                var lbl = new Label("");
                 lbl.style.position = Position.Absolute;
                 lbl.style.color = _theme.TextPrimary;
                 lbl.style.fontSize = S(9);
@@ -84,7 +93,13 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
                 _container.Add(lbl);
                 _carLabels.Add(lbl);
             }
-            return _container;
+            // Hide overflow if consist shrank (don't destroy — pool the elements)
+            for (int i = 0; i < _carBoxes.Count; i++)
+            {
+                var visible = i < n;
+                _carBoxes[i].style.display = visible ? DisplayStyle.Flex : DisplayStyle.None;
+                _carLabels[i].style.display = visible ? DisplayStyle.Flex : DisplayStyle.None;
+            }
         }
 
         /// <summary>
@@ -103,6 +118,7 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
         public void Update(float headFt, float pxPerFt, float startFt, bool reversed)
         {
             if (_container == null || pxPerFt <= 0f) return;
+            EnsureBoxesMatchConsist();
             var rect = _container.contentRect;
             if (rect.height <= 0f) return;
 

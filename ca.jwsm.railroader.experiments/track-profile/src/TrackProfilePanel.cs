@@ -107,6 +107,28 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             Refresh();
         }
 
+        /// <summary>
+        /// Show or hide the entire panel. Used to gate visibility on whether
+        /// a locomotive is currently selected.
+        /// </summary>
+        public void SetVisible(bool visible)
+        {
+            if (_root != null)
+                _root.style.display = visible ? DisplayStyle.Flex : DisplayStyle.None;
+        }
+
+        /// <summary>
+        /// Push a fresh live state in: the route data was repopulated by the
+        /// LiveRouteSampler, the train head sits at distFt = 0 (head-relative
+        /// frame), and reversed reflects current direction of travel.
+        /// </summary>
+        public void RefreshLive(bool reversed)
+        {
+            _trainHeadFt = 0f;
+            _reversed = reversed;
+            Refresh();
+        }
+
         public float TrainHeadFt => _trainHeadFt;
         public bool  Reversed    => _reversed;
         public float CurrentGradePct => _route.GradeAt(_trainHeadFt);

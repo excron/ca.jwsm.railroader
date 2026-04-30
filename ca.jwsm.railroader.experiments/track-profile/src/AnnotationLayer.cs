@@ -51,6 +51,44 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             _container.style.bottom = 0;
             _container.pickingMode = PickingMode.Ignore;
 
+            RebuildElementsFromRoute();
+            return _container;
+        }
+
+        /// <summary>
+        /// Tear down and rebuild internal annotation elements to match the
+        /// current Route.Annotations list. Called when annotations might
+        /// have changed (live-data refreshes, switch overrides discovered
+        /// along route, etc.). Cheap when annotations are stable; we
+        /// short-circuit on identity match.
+        /// </summary>
+        private void RebuildElementsFromRoute()
+        {
+            // Identity-cheap check: if the list reference + count match,
+            // assume nothing changed. Live-source might mutate the same
+            // list in place — fall back to count check.
+            if (_elements.Count == _route.Annotations.Count)
+            {
+                bool same = true;
+                for (int i = 0; i < _elements.Count; i++)
+                {
+                    if (!ReferenceEquals(_elements[i].Annotation, _route.Annotations[i]))
+                    {
+                        same = false;
+                        break;
+                    }
+                }
+                if (same) return;
+            }
+
+            // Tear down existing
+            foreach (var e in _elements)
+            {
+                if (e.Root != null && e.Root.parent != null) e.Root.RemoveFromHierarchy();
+            }
+            _elements.Clear();
+
+            // Rebuild
             foreach (var ann in _route.Annotations)
             {
                 var elem = BuildElementFor(ann);
@@ -60,12 +98,12 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
                     _elements.Add(elem);
                 }
             }
-            return _container;
         }
 
         public void Update(float pxPerFt, float startFt, float endFt)
         {
             if (_container == null || pxPerFt <= 0f) return;
+            RebuildElementsFromRoute();
             var rect = _container.contentRect;
             if (rect.height <= 0f) return;
 

@@ -1,42 +1,42 @@
 using System.IO;
 using System.Reflection;
 using GalaSoft.MvvmLight.Messaging;
+using Game.Events;
 using Game.Settings;
+using Model;
 using UnityEngine;
-using UnityEngine.InputSystem;
 using UnityEngine.UIElements;
 using UnityModManagerNet;
 
 namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
 {
     /// <summary>
-    /// UMM entry point for the track-in-profile experiment.
+    /// UMM entry point for the track-in-profile experiment, wired to live
+    /// game state.
     ///
-    /// First pass: a static dummy dataset (data/sample-route.json) drives
-    /// the chart. A dev-mode bar sits at the top of the screen with a
-    /// position slider + reverser toggle so we can scrub the train through
-    /// the route and confirm the chart reads cleanly across the panel
-    /// width and across UI scales / themes.
+    /// Visibility: the panel only appears when the player has selected a
+    /// locomotive (TrainController.Shared.SelectedCar with IsLocomotive == true).
     ///
-    /// Hotkeys:
-    ///   Arrow Left/Right    scrub train position by 50 ft
-    ///   Shift+Arrow         scrub by 500 ft (5× faster)
-    ///   R                   toggle reverser direction
+    /// Refresh cadence: ~5 Hz. Train movement between refreshes is small enough
+    /// at typical speeds that 5 Hz reads as smooth, and the per-tick cost
+    /// (route projection + grade sampling + consist enumeration) is trivial
+    /// compared to per-frame.
     /// </summary>
     public static class ExperimentEntry
     {
+        private const float RefreshIntervalSeconds = 0.2f;  // 5 Hz
+
         public static UnityModManager.ModEntry Mod { get; private set; }
 
         private static Theme _theme;
-        private static RouteData _route;
         private static bool _shown;
         private static GameObject _panelGo;
         private static float _appliedScale = -1f;
 
         private static TrackProfilePanel _profile;
-        private static Slider _devSlider;
-        private static Toggle _devReverser;
-        private static Label _devReadout;
+        private static RouteData _route;
+        private static LiveRouteSampler.State _samplerState;
+        private static float _refreshTimer;
 
         public static bool Load(UnityModManager.ModEntry modEntry)
         {
@@ -48,16 +48,15 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
                 var themePath = Path.Combine(modDir, "Themes", "charcoal.json");
                 _theme = Theme.LoadFromFile(themePath);
                 modEntry.Logger.Log($"Loaded theme '{_theme.Name}' from {themePath}");
-
-                var dataPath = Path.Combine(modDir, "data", "sample-route.json");
-                _route = RouteData.LoadFromFile(dataPath);
-                modEntry.Logger.Log($"Loaded route '{_route.Name}' ({_route.LengthFt:0} ft, {_route.Samples.Count} grade samples, {_route.Annotations.Count} annotations, {_route.Consist.Count} cars)");
             }
             catch (System.Exception ex)
             {
-                modEntry.Logger.Error($"Failed to load assets: {ex}");
+                modEntry.Logger.Error($"Failed to load theme: {ex}");
                 return false;
             }
+
+            _route = RouteData.CreateEmpty();
+            _samplerState = new LiveRouteSampler.State();
 
             modEntry.OnUpdate = OnUpdate;
             modEntry.Logger.Log("Track profile experiment: loaded. Awaiting scene to attach panel.");
@@ -66,6 +65,7 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
 
         private static void OnUpdate(UnityModManager.ModEntry modEntry, float dt)
         {
+            // First-show: wait for camera to be ready, then attach.
             if (!_shown)
             {
                 if (Camera.main == null) return;
@@ -73,40 +73,54 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
                 {
                     ShowExperiment();
                     _shown = true;
-                    modEntry.Logger.Log("Track profile experiment: panel attached.");
-                    modEntry.Logger.Log("Arrow keys scrub position; R toggles reverser direction.");
+                    modEntry.Logger.Log("Track profile experiment: panel attached. Hidden until a locomotive is selected.");
                 }
                 catch (System.Exception ex)
                 {
                     modEntry.Logger.Error($"Failed to attach experiment panel: {ex}");
                     _shown = true;
                 }
+                return;
             }
 
-            // Hotkey-driven scrub + reverser toggle. Cheap per-frame check
-            // via the new InputSystem (legacy Input is unreliable when the
-            // new system is the active handler).
+            // Throttled refresh from live game state. We poll selection here
+            // rather than relying solely on SelectedCarChanged because the
+            // panel content also depends on the loco's continually-changing
+            // position; the event-driven path covers re-show after a swap.
+            _refreshTimer -= dt;
+            if (_refreshTimer <= 0f)
+            {
+                _refreshTimer = RefreshIntervalSeconds;
+                RefreshFromLive();
+            }
+        }
+
+        /// <summary>
+        /// Read live state, decide whether to show the panel, and if so push
+        /// a fresh data snapshot through to the chart.
+        /// </summary>
+        private static void RefreshFromLive()
+        {
             if (_profile == null) return;
-            var kb = Keyboard.current;
-            if (kb == null) return;
 
-            var step = (kb.shiftKey.isPressed ? 500f : 50f);
-            if (kb.leftArrowKey.isPressed)
+            var tc = TrainController.Shared;
+            if (tc == null) { _profile.SetVisible(false); return; }
+
+            var loco = tc.SelectedCar;
+            if (loco == null || !loco.IsLocomotive)
             {
-                _profile.SetTrainHead(_profile.TrainHeadFt - step * dt * 60f);
-                SyncDevControlsToState();
-            }
-            else if (kb.rightArrowKey.isPressed)
-            {
-                _profile.SetTrainHead(_profile.TrainHeadFt + step * dt * 60f);
-                SyncDevControlsToState();
+                _profile.SetVisible(false);
+                return;
             }
 
-            if (kb.rKey.wasPressedThisFrame)
+            if (!LiveRouteSampler.Sample(loco, _route, _samplerState))
             {
-                _profile.SetReversed(!_profile.Reversed);
-                SyncDevControlsToState();
+                _profile.SetVisible(false);
+                return;
             }
+
+            _profile.SetVisible(true);
+            _profile.RefreshLive(_samplerState.LastReversed);
         }
 
         private static void RebuildPanel()
@@ -126,95 +140,11 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
 
             _profile = new TrackProfilePanel(_theme, _route, _appliedScale);
             root.Add(_profile.Build());
-            _profile.SetTrainHead(_route.InitialHeadPositionFt);
+            _profile.SetVisible(false);  // hidden until a loco is selected
 
-            root.Add(BuildDevControls());
-            SyncDevControlsToState();
-        }
-
-        /// <summary>
-        /// Tiny dev-mode toolbar at the top-left of the screen. Position slider
-        /// scrubs train head; reverser toggle flips the consist's intra-train
-        /// orientation; readout shows current head position + grade. Lives
-        /// outside the production panel so the layout we're tuning isn't
-        /// polluted by dev affordances.
-        /// </summary>
-        private static VisualElement BuildDevControls()
-        {
-            var bar = new VisualElement();
-            bar.style.position = Position.Absolute;
-            bar.style.top = _appliedScale * 8f;
-            bar.style.left = _appliedScale * 8f;
-            bar.style.width = _appliedScale * 360f;
-            bar.style.paddingLeft = _appliedScale * 8f;
-            bar.style.paddingRight = _appliedScale * 8f;
-            bar.style.paddingTop = _appliedScale * 6f;
-            bar.style.paddingBottom = _appliedScale * 6f;
-            bar.style.backgroundColor = _theme.Panel;
-            bar.style.borderTopLeftRadius = _appliedScale * 6f;
-            bar.style.borderTopRightRadius = _appliedScale * 6f;
-            bar.style.borderBottomLeftRadius = _appliedScale * 6f;
-            bar.style.borderBottomRightRadius = _appliedScale * 6f;
-            bar.style.flexDirection = FlexDirection.Column;
-
-            var title = new Label("DEV — TRACK PROFILE");
-            title.style.color = _theme.TextMuted;
-            title.style.fontSize = _appliedScale * 10f;
-            title.style.unityFontStyleAndWeight = FontStyle.Bold;
-            bar.Add(title);
-
-            _devSlider = new Slider("Position", 0f, _route.LengthFt);
-            _devSlider.style.color = _theme.TextPrimary;
-            _devSlider.style.fontSize = _appliedScale * 10f;
-            _devSlider.value = _route.InitialHeadPositionFt;
-            _devSlider.RegisterValueChangedCallback(evt =>
-            {
-                if (_profile != null) _profile.SetTrainHead(evt.newValue);
-                UpdateReadout();
-            });
-            bar.Add(_devSlider);
-
-            _devReverser = new Toggle("Reversed");
-            _devReverser.style.color = _theme.TextPrimary;
-            _devReverser.style.fontSize = _appliedScale * 10f;
-            _devReverser.RegisterValueChangedCallback(evt =>
-            {
-                if (_profile != null) _profile.SetReversed(evt.newValue);
-                UpdateReadout();
-            });
-            bar.Add(_devReverser);
-
-            _devReadout = new Label("");
-            _devReadout.style.color = _theme.TextMuted;
-            _devReadout.style.fontSize = _appliedScale * 10f;
-            bar.Add(_devReadout);
-
-            return bar;
-        }
-
-        private static void SyncDevControlsToState()
-        {
-            if (_devSlider != null && _profile != null)
-            {
-                // SetValueWithoutNotify avoids re-firing the callback when we
-                // sync from hotkeys.
-                _devSlider.SetValueWithoutNotify(_profile.TrainHeadFt);
-            }
-            if (_devReverser != null && _profile != null)
-            {
-                _devReverser.SetValueWithoutNotify(_profile.Reversed);
-            }
-            UpdateReadout();
-        }
-
-        private static void UpdateReadout()
-        {
-            if (_devReadout == null || _profile == null) return;
-            var headFt = _profile.TrainHeadFt;
-            var headMi = headFt / 5280f;
-            var grade = _profile.CurrentGradePct;
-            var sign = grade >= 0f ? "+" : "";
-            _devReadout.text = $"Head: {headFt:0} ft  ({headMi:0.00} mi)   Grade: {sign}{grade:0.0}%   Dir: {(_profile.Reversed ? "REV" : "FWD")}";
+            // Trigger an immediate refresh after rebuild so the panel reflects
+            // the current selection state without waiting for the next 5 Hz tick.
+            _refreshTimer = 0f;
         }
 
         private static void ShowExperiment()
@@ -224,7 +154,6 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             panelSettings.scaleMode = PanelScaleMode.ConstantPixelSize;
             panelSettings.referenceDpi = 96;
             panelSettings.fallbackDpi = 96;
-            // Sort above the HUD experiment (100) but below any modal overlays.
             panelSettings.sortingOrder = 105;
 
             _panelGo = new GameObject("TrackProfilePanelHost");
@@ -235,8 +164,12 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             doc.rootVisualElement.style.flexGrow = 1;
             doc.rootVisualElement.pickingMode = PickingMode.Ignore;
 
-            // Same UI-scale event subscription pattern as the HUD experiment.
+            // UI-scale change subscription (vanilla CanvasScaleChanged event).
             Messenger.Default.Register<CanvasScaleChanged>(_panelGo, _ => RebuildPanel());
+
+            // Selection-change subscription. Triggers an immediate refresh so
+            // the panel toggles visibility the same frame the player swaps loco.
+            Messenger.Default.Register<SelectedCarChanged>(_panelGo, _ => { _refreshTimer = 0f; });
 
             RebuildPanel();
         }

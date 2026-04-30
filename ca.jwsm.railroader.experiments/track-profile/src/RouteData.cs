@@ -33,6 +33,35 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             }
         }
 
+        /// <summary>
+        /// Construct an empty RouteData ready to be populated by a live
+        /// sampler. Avoids the JSON-load codepath when we're driven by
+        /// game state rather than a baked dataset.
+        /// </summary>
+        public static RouteData CreateEmpty()
+        {
+            return new RouteData
+            {
+                Name        = "",
+                Description = "",
+                LengthFt    = 0f,
+                Samples     = new System.Collections.Generic.List<GradeSample>(256),
+                Annotations = new System.Collections.Generic.List<Annotation>(64),
+                Consist     = new System.Collections.Generic.List<Vehicle>(64),
+            };
+        }
+
+        /// <summary>
+        /// Clear all per-tick data so a fresh sampler pass can repopulate
+        /// without allocating new lists. Preserves capacity.
+        /// </summary>
+        public void Reset()
+        {
+            Samples.Clear();
+            Annotations.Clear();
+            Consist.Clear();
+        }
+
         public static RouteData LoadFromFile(string jsonPath)
         {
             var json = File.ReadAllText(jsonPath);
