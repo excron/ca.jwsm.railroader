@@ -155,9 +155,10 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             _chart.SetWindow(window);
 
             var pxPerFt = _chart.PixelsPerFoot;
+            var pxPerElevFt = _chart.PixelsPerElevationFt;
             if (pxPerFt > 0f)
             {
-                _vehicleRow.Update(_trainHeadFt, pxPerFt, window.StartFt, _reversed);
+                _vehicleRow.Update(_trainHeadFt, pxPerFt, window.StartFt, _reversed, pxPerElevFt);
                 _annotations.Update(pxPerFt, window.StartFt, window.EndFt);
             }
         }

@@ -115,29 +115,29 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
         ///         while keeping the consist visually anchored at the same
         ///         x-range.
         /// </summary>
-        public void Update(float headFt, float pxPerFt, float startFt, bool reversed)
+        public void Update(float headFt, float pxPerFt, float startFt, bool reversed,
+                           float pxPerElevFt)
         {
             if (_container == null || pxPerFt <= 0f) return;
             EnsureBoxesMatchConsist();
             var rect = _container.contentRect;
             if (rect.height <= 0f) return;
 
-            // The 0% gridline sits at vertical center of the chart drawing
-            // area. Because VehicleRow's container is parented under the
-            // ChartView's draw area, our rect.height matches the chart's,
-            // and the center is rect.height / 2.
+            // The chart's centerline (Y=midY) represents the train head's
+            // current elevation reference. We position each car at the
+            // line's elevation at THAT car's distFt position, so the consist
+            // visually hugs the track grade — back of train sits lower on
+            // a climb, higher on a descent, etc.
             var centerY = rect.height * 0.5f;
             var carHeight = S(CarHeightPx);
 
-            // Total consist length in feet (from cached sum).
             var totalLenFt = _route.TotalConsistLengthFt;
             var tailFt = headFt - totalLenFt;
 
-            // The Consist list is already in tail→head order — the live
-            // sampler produces it that way (using FrontIsA + reversed to
-            // pick the right EnumerateCoupled direction). We just walk
-            // left→right rendering. The `reversed` parameter is unused
-            // here today; kept for future use (direction indicator etc.).
+            // Consist already in tail→head order (sampler picks the right
+            // EnumerateCoupled direction). Walk left→right rendering.
+            // `reversed` parameter retained for future use (e.g., direction
+            // indicator), not consumed here.
             var walk = _route.Consist;
 
             float cursorFt = tailFt;
@@ -154,21 +154,29 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
                 var rightPx = (rightFt - startFt) * pxPerFt;
                 var widthPx = Mathf.Max(2f, rightPx - leftPx - S(CarGapPx));
 
+                // Vertical: center the car on the line's elevation at the
+                // car's center. With pxPerElevFt = 0 we fall back to the
+                // centerline — matches old behavior so we don't NRE before
+                // chart layout has resolved.
+                var carCenterFt = (leftFt + rightFt) * 0.5f;
+                var elev = _route.ElevationAt(carCenterFt);
+                var carCenterY = (pxPerElevFt > 0f)
+                    ? centerY - elev * pxPerElevFt
+                    : centerY;
+                var topY = carCenterY - carHeight * 0.5f;
+
                 box.style.left = leftPx;
                 box.style.width = widthPx;
-                box.style.top = centerY - carHeight * 0.5f;
-                // Update color in case kind ordering changed under reverse.
+                box.style.top = topY;
                 box.style.backgroundColor = ColorForKind(v.Kind);
 
-                // Label sits just above the box. Hide for cars narrower than
-                // the threshold so labels don't overlap.
                 if (widthPx >= S(LabelMinCarWidthPx))
                 {
                     lbl.style.display = DisplayStyle.Flex;
                     lbl.text = v.ShortName;
                     lbl.style.left = leftPx;
                     lbl.style.width = widthPx;
-                    lbl.style.top = centerY - carHeight * 0.5f - S(11);
+                    lbl.style.top = topY - S(11);
                 }
                 else
                 {

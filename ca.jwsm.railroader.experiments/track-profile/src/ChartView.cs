@@ -46,6 +46,7 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
         private VisualElement _root;
         private VisualElement _scaleColumn;
         private VisualElement _drawArea;
+        private VisualElement _readoutBox;
         private Label _gradeReadout;
         private Label _maxAheadReadout;
 
@@ -80,27 +81,40 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             _drawArea.generateVisualContent += DrawChart;
             _root.Add(_drawArea);
 
-            // Top-right grade readouts. Two stacked labels:
-            //   Big bold:    current grade at the train (e.g. "+4.5% UP")
-            //   Smaller dim: max abs grade in the lookahead (e.g. "max +5.2% / -1.8% ahead")
+            // Grade readouts in a top-LEFT box with a semi-opaque background
+            // so the chart's gridlines + track line can't visually run
+            // through the text. Two stacked labels inside one container.
+            _readoutBox = new VisualElement();
+            _readoutBox.style.position = Position.Absolute;
+            _readoutBox.style.left = S(6);
+            _readoutBox.style.top = S(4);
+            var bg = _theme.Panel;
+            bg.a = Mathf.Min(1f, bg.a + 0.10f);
+            _readoutBox.style.backgroundColor = bg;
+            _readoutBox.style.paddingLeft = S(6);
+            _readoutBox.style.paddingRight = S(6);
+            _readoutBox.style.paddingTop = S(2);
+            _readoutBox.style.paddingBottom = S(3);
+            _readoutBox.style.borderTopLeftRadius = S(3);
+            _readoutBox.style.borderTopRightRadius = S(3);
+            _readoutBox.style.borderBottomLeftRadius = S(3);
+            _readoutBox.style.borderBottomRightRadius = S(3);
+            _readoutBox.style.flexDirection = FlexDirection.Column;
+            _readoutBox.pickingMode = PickingMode.Ignore;
+            _drawArea.Add(_readoutBox);
+
             _gradeReadout = new Label("");
-            _gradeReadout.style.position = Position.Absolute;
-            _gradeReadout.style.right = S(8);
-            _gradeReadout.style.top = S(2);
             _gradeReadout.style.color = _theme.TextPrimary;
             _gradeReadout.style.fontSize = S(13);
             _gradeReadout.style.unityFontStyleAndWeight = FontStyle.Bold;
             _gradeReadout.pickingMode = PickingMode.Ignore;
-            _drawArea.Add(_gradeReadout);
+            _readoutBox.Add(_gradeReadout);
 
             _maxAheadReadout = new Label("");
-            _maxAheadReadout.style.position = Position.Absolute;
-            _maxAheadReadout.style.right = S(8);
-            _maxAheadReadout.style.top = S(18);
             _maxAheadReadout.style.color = _theme.TextMuted;
-            _maxAheadReadout.style.fontSize = S(9);
+            _maxAheadReadout.style.fontSize = S(11);
             _maxAheadReadout.pickingMode = PickingMode.Ignore;
-            _drawArea.Add(_maxAheadReadout);
+            _readoutBox.Add(_maxAheadReadout);
 
             return _root;
         }
@@ -132,6 +146,23 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
                 if (_window.WidthFt <= 0f || _drawArea == null) return 0f;
                 var w = _drawArea.contentRect.width;
                 return w / _window.WidthFt;
+            }
+        }
+
+        /// <summary>
+        /// Vertical pixels per foot of elevation, given the current auto-scaled
+        /// half-range. VehicleRow uses this to position cars along the track
+        /// line so the consist hugs the grade rather than sitting on a flat
+        /// centerline.
+        /// </summary>
+        public float PixelsPerElevationFt
+        {
+            get
+            {
+                if (_drawArea == null) return 0f;
+                var h = _drawArea.contentRect.height;
+                if (h <= 0f || _halfRangeFt <= 0.001f) return 0f;
+                return (h * 0.5f) / _halfRangeFt;
             }
         }
 
@@ -218,9 +249,9 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             else if (current < -0.05f) currentText = $"{current:0.0}%  DN";
             else                       currentText = "0.0%  LEVEL";
             _gradeReadout.text = currentText;
-            _gradeReadout.style.color = current > 0.05f ? _theme.Warning
-                                       : current < -0.05f ? _theme.AccentHover
-                                       : _theme.TextPrimary;
+            // Color stays neutral (text-primary) regardless of direction —
+            // the +/- and UP/DN tokens carry the direction signal already.
+            _gradeReadout.style.color = _theme.TextPrimary;
 
             // Max abs ahead (samples with DistFt > 0)
             float maxPos = 0f, maxNeg = 0f;
