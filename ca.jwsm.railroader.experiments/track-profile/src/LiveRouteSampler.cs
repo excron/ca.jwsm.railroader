@@ -375,18 +375,28 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
 
             foreach (var step in stepList)
             {
+                // When multiple areas contain a position (e.g., a "Loading
+                // Area" sub-zone nested inside a broader town area), we
+                // prefer the LARGEST radius — gives geographic context
+                // ("Nantahala") rather than internal sub-divisions
+                // ("Nantahala LA"). Most specific is rarely what the
+                // player wants for a passing-through label.
                 Area matched = null;
+                float matchedRadius = -1f;
                 for (int i = 0; i < state.CachedAreas.Count; i++)
                 {
                     var a = state.CachedAreas[i];
                     if (a == null) continue;
-                    if (a.Contains(step.WorldPos)) { matched = a; break; }
+                    if (!a.Contains(step.WorldPos)) continue;
+                    if (a.radius > matchedRadius)
+                    {
+                        matched = a;
+                        matchedRadius = a.radius;
+                    }
                 }
                 // Vanilla convention: use area.name (the GameObject name,
                 // human-readable like "Sylva" or "Nantahala") not
-                // area.identifier (internal short id). Verified across
-                // DailyReport, SwitchListController, StationAgent — they
-                // all read area.name.
+                // area.identifier (internal short id).
                 var areaName = matched?.name;
                 if (areaName != currentAreaId)
                 {
@@ -441,22 +451,31 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
 
             foreach (var step in stepList)
             {
+                // When multiple IndustryComponents claim the same step
+                // (a parent "Connelly" plus a child "Connelly Logs L2"),
+                // prefer the longest DisplayName — most-specific name
+                // wins. Without this, cache order (non-deterministic)
+                // determined which one we showed.
                 string matched = null;
+                int matchedLen = -1;
                 for (int i = 0; i < state.CachedIndustryComponents.Count; i++)
                 {
                     var ic = state.CachedIndustryComponents[i];
                     if (ic == null || ic.trackSpans == null) continue;
+                    bool hit = false;
                     for (int j = 0; j < ic.trackSpans.Length; j++)
                     {
                         var span = ic.trackSpans[j];
                         if (span == null) continue;
-                        if (span.Contains(step.Location))
-                        {
-                            matched = ic.DisplayName;
-                            break;
-                        }
+                        if (span.Contains(step.Location)) { hit = true; break; }
                     }
-                    if (matched != null) break;
+                    if (!hit) continue;
+                    var name = ic.DisplayName ?? "";
+                    if (name.Length > matchedLen)
+                    {
+                        matched = name;
+                        matchedLen = name.Length;
+                    }
                 }
 
                 if (matched != currentSpanLabel)
