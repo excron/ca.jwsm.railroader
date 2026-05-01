@@ -183,12 +183,14 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
 
         public sealed class Annotation
         {
-            public string Type;       // milepost | switch | signal | station | industry | endofline
-            public float  DistFt;
+            public string Type;       // milepost | switch | signal | station | industry | endofline | area | span
+            public float  DistFt;     // start position (single-point types use just this)
+            public float  DistFtEnd;  // end position for ranges (area, span); same as DistFt for points
             public string Label;
             public string Aspect;     // for signals: clear|approach|stop
-            public string Diverging;  // for switches: left|right|straight
+            public string Diverging;  // for switches: normal|reversed
             public bool   Labeled;    // for mileposts: full or unlabeled tick
+            public string Identifier; // disambiguator (e.g., area or industry id)
         }
 
         public sealed class Vehicle

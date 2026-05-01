@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using Helpers;
 using Model;
 using Model.Definition;
+using Model.Ops;
 using Track;
 using Track.Signals;
 using UnityEngine;
@@ -60,8 +61,16 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
         public sealed class State
         {
             public bool LastReversed;
-            public List<CTCSignal> CachedSignals;
+            public List<CTCSignal>        CachedSignals;
+            public List<Area>             CachedAreas;
+            public List<IndustryComponent> CachedIndustryComponents;
+            public List<PassengerStop>    CachedStations;
         }
+
+        // Proximity threshold (m) for stations — generous because stations
+        // can be stretched along a platform; users want them to appear once
+        // the route is anywhere near the platform centerpoint.
+        private const float StationProximityThresholdM = 100f;
 
         /// <summary>
         /// Returns false if the loco isn't usable for sampling (null,
@@ -161,6 +170,9 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             FillElevationSamples(dest, stepList, trainElevFt);
             DetectSwitchAnnotations(graph, dest, stepList);
             DetectSignalAnnotations(state, dest, stepList);
+            DetectAreaAnnotations(state, dest, stepList);
+            DetectSpanAnnotations(state, dest, stepList);
+            DetectStationAnnotations(state, dest, stepList);
 
             dest.CurrentGradePct = dest.GradeAt(0f);
             return true;
@@ -337,6 +349,178 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
                     Type   = "signal",
                     DistFt = preciseDistFt,
                     Aspect = AspectToKey(sig.CurrentAspect),
+                });
+            }
+        }
+
+        /// <summary>
+        /// Detect contiguous "area" regions along the route. Each route
+        /// step's world position is checked against every cached Area's
+        /// radial Contains(point); consecutive steps in the same area are
+        /// coalesced into a single annotation with a distFt range. Areas
+        /// are global, render unconditionally — they tell you where the
+        /// train is geographically.
+        /// </summary>
+        private static void DetectAreaAnnotations(
+            State state, RouteData dest, List<RouteStep> stepList)
+        {
+            if (state.CachedAreas == null || state.CachedAreas.Count == 0)
+            {
+                state.CachedAreas = new List<Area>(Object.FindObjectsOfType<Area>());
+                if (state.CachedAreas.Count == 0) return;
+            }
+
+            string currentAreaId = null;
+            float runStartFt = 0f;
+
+            foreach (var step in stepList)
+            {
+                Area matched = null;
+                for (int i = 0; i < state.CachedAreas.Count; i++)
+                {
+                    var a = state.CachedAreas[i];
+                    if (a == null) continue;
+                    if (a.Contains(step.WorldPos)) { matched = a; break; }
+                }
+                var areaId = matched?.identifier;
+                if (areaId != currentAreaId)
+                {
+                    if (currentAreaId != null)
+                    {
+                        dest.Annotations.Add(new RouteData.Annotation
+                        {
+                            Type      = "area",
+                            DistFt    = runStartFt,
+                            DistFtEnd = step.DistFt,
+                            Label     = currentAreaId,
+                            Identifier = currentAreaId,
+                        });
+                    }
+                    currentAreaId = areaId;
+                    runStartFt = step.DistFt;
+                }
+            }
+            if (currentAreaId != null && stepList.Count > 0)
+            {
+                dest.Annotations.Add(new RouteData.Annotation
+                {
+                    Type      = "area",
+                    DistFt    = runStartFt,
+                    DistFtEnd = stepList[stepList.Count - 1].DistFt,
+                    Label     = currentAreaId,
+                    Identifier = currentAreaId,
+                });
+            }
+        }
+
+        /// <summary>
+        /// Detect industry spans the route is currently switched into. For
+        /// each route step, ask each cached IndustryComponent's TrackSpans
+        /// whether they Contain(step.Location). The route projection is
+        /// already lined-route-aware (LocationByMoving follows isThrown),
+        /// so we naturally only see spans on tracks we're actually heading
+        /// down — parallel-track spans we're not switched onto don't show.
+        /// </summary>
+        private static void DetectSpanAnnotations(
+            State state, RouteData dest, List<RouteStep> stepList)
+        {
+            if (state.CachedIndustryComponents == null || state.CachedIndustryComponents.Count == 0)
+            {
+                state.CachedIndustryComponents = new List<IndustryComponent>(
+                    Object.FindObjectsOfType<IndustryComponent>());
+                if (state.CachedIndustryComponents.Count == 0) return;
+            }
+
+            string currentSpanLabel = null;
+            float runStartFt = 0f;
+
+            foreach (var step in stepList)
+            {
+                string matched = null;
+                for (int i = 0; i < state.CachedIndustryComponents.Count; i++)
+                {
+                    var ic = state.CachedIndustryComponents[i];
+                    if (ic == null || ic.trackSpans == null) continue;
+                    for (int j = 0; j < ic.trackSpans.Length; j++)
+                    {
+                        var span = ic.trackSpans[j];
+                        if (span == null) continue;
+                        if (span.Contains(step.Location))
+                        {
+                            matched = ic.DisplayName;
+                            break;
+                        }
+                    }
+                    if (matched != null) break;
+                }
+
+                if (matched != currentSpanLabel)
+                {
+                    if (currentSpanLabel != null)
+                    {
+                        dest.Annotations.Add(new RouteData.Annotation
+                        {
+                            Type      = "span",
+                            DistFt    = runStartFt,
+                            DistFtEnd = step.DistFt,
+                            Label     = currentSpanLabel,
+                        });
+                    }
+                    currentSpanLabel = matched;
+                    runStartFt = step.DistFt;
+                }
+            }
+            if (currentSpanLabel != null && stepList.Count > 0)
+            {
+                dest.Annotations.Add(new RouteData.Annotation
+                {
+                    Type      = "span",
+                    DistFt    = runStartFt,
+                    DistFtEnd = stepList[stepList.Count - 1].DistFt,
+                    Label     = currentSpanLabel,
+                });
+            }
+        }
+
+        /// <summary>
+        /// Discover passenger stops near the route. Uses the same cache +
+        /// proximity pattern as signals (XZ distance, world→game space
+        /// conversion).
+        /// </summary>
+        private static void DetectStationAnnotations(
+            State state, RouteData dest, List<RouteStep> stepList)
+        {
+            if (state.CachedStations == null || state.CachedStations.Count == 0)
+            {
+                state.CachedStations = new List<PassengerStop>(
+                    Object.FindObjectsOfType<PassengerStop>());
+                if (state.CachedStations.Count == 0) return;
+            }
+
+            var thresholdSq = StationProximityThresholdM * StationProximityThresholdM;
+            for (int i = 0; i < state.CachedStations.Count; i++)
+            {
+                var stop = state.CachedStations[i];
+                if (stop == null) continue;
+                var stopPos = WorldTransformer.WorldToGame(stop.transform.position);
+
+                float bestSq = thresholdSq;
+                bool foundStep = false;
+                for (int s = 0; s < stepList.Count; s++)
+                {
+                    var dx = stopPos.x - stepList[s].WorldPos.x;
+                    var dz = stopPos.z - stepList[s].WorldPos.z;
+                    var d = dx * dx + dz * dz;
+                    if (d < bestSq) { bestSq = d; foundStep = true; }
+                }
+                if (!foundStep) continue;
+
+                var preciseDistFt = ClosestStepDistFtInterpolated(stopPos, stepList);
+                dest.Annotations.Add(new RouteData.Annotation
+                {
+                    Type   = "station",
+                    DistFt = preciseDistFt,
+                    Label  = stop.DisplayName,
                 });
             }
         }

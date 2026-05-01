@@ -135,15 +135,21 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             foreach (var elem in _elements)
             {
                 var ann = elem.Annotation;
-                var visible = ann.DistFt >= startFt - 50f && ann.DistFt <= endFt + 50f;
+                // For ranges, visibility is true if any part of the range
+                // overlaps the visible window. For points, DistFtEnd ==
+                // DistFt so the check degenerates to the point overlap.
+                var rangeStart = ann.DistFt;
+                var rangeEnd = (ann.DistFtEnd > ann.DistFt) ? ann.DistFtEnd : ann.DistFt;
+                var visible = rangeEnd >= startFt - 50f && rangeStart <= endFt + 50f;
                 elem.Root.style.display = visible ? DisplayStyle.Flex : DisplayStyle.None;
                 if (!visible) continue;
 
-                var x = (ann.DistFt - startFt) * pxPerFt;
+                var x = (rangeStart - startFt) * pxPerFt;
+                var xEnd = (rangeEnd - startFt) * pxPerFt;
                 var lineY = (pxPerElevFt > 0f)
-                    ? centerY - _route.ElevationAt(ann.DistFt) * pxPerElevFt
+                    ? centerY - _route.ElevationAt(rangeStart) * pxPerElevFt
                     : centerY;
-                elem.Position(x, centerY, lineY, rect.height, S, elem.StackIndex);
+                elem.Position(x, xEnd, centerY, lineY, rect.height, S, elem.StackIndex);
             }
         }
 
@@ -153,8 +159,10 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             {
                 case "switch":     return BuildDot(ann, ColorForSwitch(ann));
                 case "signal":     return BuildDot(ann, ColorForSignal(ann));
-                case "milepost":   return BuildMilepost(ann);
+                case "area":       return BuildArea(ann);
+                case "span":       return BuildSpan(ann);
                 case "station":    return BuildStation(ann);
+                case "milepost":   return BuildMilepost(ann);
                 case "industry":   return BuildIndustry(ann);
                 case "endofline":  return BuildEndOfLine(ann);
                 default:           return null;
@@ -209,7 +217,7 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             {
                 Annotation = ann,
                 Root = root,
-                Position = (x, centerY, lineY, fullH, scale, stackIndex) =>
+                Position = (x, xEnd, centerY, lineY, fullH, scale, stackIndex) =>
                 {
                     var dSize = scale(DotDiameterPx);
                     var dRadius = dSize * 0.5f;
@@ -296,7 +304,7 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             {
                 Annotation = ann,
                 Root = root,
-                Position = (x, centerY, lineY, fullH, scale, stackIndex) =>
+                Position = (x, xEnd, centerY, lineY, fullH, scale, stackIndex) =>
                 {
                     var tickH = ann.Labeled ? scale(10) : scale(8);
                     tick.style.left = x;
@@ -310,30 +318,101 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             };
         }
 
-        // ---- Stations / industries / EOL (kept for future live wiring) ----
+        // ---- Area: vertical line at start, label hugs the visible-window
+        //      portion of the area, sits at the very top of the chart so
+        //      it acts like a region label without crowding the line.
 
-        private AnnotationElement BuildStation(RouteData.Annotation ann)
+        private AnnotationElement BuildArea(RouteData.Annotation ann)
         {
             var root = new VisualElement();
             root.style.position = Position.Absolute;
             root.pickingMode = PickingMode.Ignore;
 
-            var line = new VisualElement();
-            line.style.position = Position.Absolute;
-            line.style.width = 1;
-            var lineColor = _theme.AccentHover;
-            lineColor.a *= 0.5f;
-            line.style.backgroundColor = lineColor;
-            line.pickingMode = PickingMode.Ignore;
-            root.Add(line);
+            // Faint vertical line at the area's start
+            var entryLine = new VisualElement();
+            entryLine.style.position = Position.Absolute;
+            entryLine.style.width = 1;
+            var entryColor = _theme.AccentHover;
+            entryColor.a *= 0.35f;
+            entryLine.style.backgroundColor = entryColor;
+            entryLine.pickingMode = PickingMode.Ignore;
+            root.Add(entryLine);
+
+            // Label box centered horizontally within the visible portion
+            // of the area, with a small backing so it stays readable when
+            // it overlaps the gridlines.
+            var labelBox = new VisualElement();
+            labelBox.style.position = Position.Absolute;
+            var bg = _theme.Panel;
+            bg.a = Mathf.Min(1f, bg.a + 0.1f);
+            labelBox.style.backgroundColor = bg;
+            labelBox.style.paddingLeft = S(6);
+            labelBox.style.paddingRight = S(6);
+            labelBox.style.paddingTop = S(1);
+            labelBox.style.paddingBottom = S(1);
+            labelBox.style.borderTopLeftRadius     = S(3);
+            labelBox.style.borderTopRightRadius    = S(3);
+            labelBox.style.borderBottomLeftRadius  = S(3);
+            labelBox.style.borderBottomRightRadius = S(3);
+            labelBox.pickingMode = PickingMode.Ignore;
+            root.Add(labelBox);
+
+            var label = new Label(ann.Label.ToUpperInvariant());
+            label.style.color = _theme.AccentHover;
+            label.style.fontSize = S(11);
+            label.style.unityFontStyleAndWeight = FontStyle.Bold;
+            label.style.unityTextAlign = TextAnchor.MiddleCenter;
+            label.pickingMode = PickingMode.Ignore;
+            labelBox.Add(label);
+
+            return new AnnotationElement
+            {
+                Annotation = ann,
+                Root = root,
+                Position = (x, xEnd, centerY, lineY, fullH, scale, stackIndex) =>
+                {
+                    // Entry line: full chart height
+                    entryLine.style.left = x;
+                    entryLine.style.top = 0;
+                    entryLine.style.height = fullH;
+
+                    // Label sits at top of chart, centered over the visible
+                    // intersection of the area with the chart's x range.
+                    var spanW = xEnd - x;
+                    labelBox.style.top = scale(2);
+                    labelBox.style.left = x + spanW * 0.5f - S(36);
+                    labelBox.style.width = S(72);
+                }
+            };
+        }
+
+        // ---- Span: thin colored bar near the bottom (under the POI rail)
+        //      with industry name centered. Only fires for spans on the
+        //      currently lined route — parallel-track spans don't appear.
+
+        private AnnotationElement BuildSpan(RouteData.Annotation ann)
+        {
+            var root = new VisualElement();
+            root.style.position = Position.Absolute;
+            root.pickingMode = PickingMode.Ignore;
+
+            var bar = new VisualElement();
+            bar.style.position = Position.Absolute;
+            bar.style.height = S(3);
+            bar.style.backgroundColor = Mute(_theme.Warning);
+            bar.style.borderTopLeftRadius     = S(1);
+            bar.style.borderTopRightRadius    = S(1);
+            bar.style.borderBottomLeftRadius  = S(1);
+            bar.style.borderBottomRightRadius = S(1);
+            bar.pickingMode = PickingMode.Ignore;
+            root.Add(bar);
 
             var label = new Label(ann.Label);
             label.style.position = Position.Absolute;
-            label.style.color = _theme.AccentHover;
+            label.style.color = _theme.Warning;
             label.style.fontSize = S(9);
             label.style.unityFontStyleAndWeight = FontStyle.Bold;
             label.style.unityTextAlign = TextAnchor.MiddleCenter;
-            label.style.width = S(96);
             label.pickingMode = PickingMode.Ignore;
             root.Add(label);
 
@@ -341,13 +420,98 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             {
                 Annotation = ann,
                 Root = root,
-                Position = (x, centerY, lineY, fullH, scale, stackIndex) =>
+                Position = (x, xEnd, centerY, lineY, fullH, scale, stackIndex) =>
                 {
-                    line.style.left = x;
-                    line.style.top = scale(14);
-                    line.style.height = fullH - scale(28);
-                    label.style.left = x - scale(48);
-                    label.style.top = 0;
+                    var spanW = Mathf.Max(2f, xEnd - x);
+                    var barY = fullH - scale(3);
+                    bar.style.left = x;
+                    bar.style.width = spanW;
+                    bar.style.top = barY;
+                    // Label centered on bar; clamped width to span (with min)
+                    var labelW = Mathf.Max(S(40), spanW);
+                    label.style.left = x + spanW * 0.5f - labelW * 0.5f;
+                    label.style.width = labelW;
+                    label.style.top = barY - S(13);
+                }
+            };
+        }
+
+        // ---- Station: small rectangle on the chart with name above.
+        //      Renders unconditionally (proximity-based discovery).
+
+        private AnnotationElement BuildStation(RouteData.Annotation ann)
+        {
+            var root = new VisualElement();
+            root.style.position = Position.Absolute;
+            root.pickingMode = PickingMode.Ignore;
+
+            // Vertical guide from the track line down to the rectangle
+            var guide = new VisualElement();
+            guide.style.position = Position.Absolute;
+            guide.style.width = 1;
+            var guideColor = _theme.Border;
+            guideColor.a *= 0.45f;
+            guide.style.backgroundColor = guideColor;
+            guide.pickingMode = PickingMode.Ignore;
+            root.Add(guide);
+
+            // Rectangle marker (taller than POI dots so it stands out)
+            var rect = new VisualElement();
+            rect.style.position = Position.Absolute;
+            var rectW = S(10);
+            var rectH = S(12);
+            rect.style.width = rectW;
+            rect.style.height = rectH;
+            rect.style.backgroundColor = Mute(_theme.AccentHover);
+            rect.style.borderTopLeftRadius     = S(2);
+            rect.style.borderTopRightRadius    = S(2);
+            rect.style.borderBottomLeftRadius  = S(2);
+            rect.style.borderBottomRightRadius = S(2);
+            var ringColor = _theme.Background;
+            ringColor.a = 0.85f;
+            rect.style.borderTopWidth    = 1;
+            rect.style.borderBottomWidth = 1;
+            rect.style.borderLeftWidth   = 1;
+            rect.style.borderRightWidth  = 1;
+            rect.style.borderTopColor    = ringColor;
+            rect.style.borderBottomColor = ringColor;
+            rect.style.borderLeftColor   = ringColor;
+            rect.style.borderRightColor  = ringColor;
+            rect.pickingMode = PickingMode.Ignore;
+            root.Add(rect);
+
+            var label = new Label(ann.Label);
+            label.style.position = Position.Absolute;
+            label.style.color = _theme.AccentHover;
+            label.style.fontSize = S(10);
+            label.style.unityFontStyleAndWeight = FontStyle.Bold;
+            label.style.unityTextAlign = TextAnchor.MiddleCenter;
+            label.style.width = S(120);
+            label.pickingMode = PickingMode.Ignore;
+            root.Add(label);
+
+            return new AnnotationElement
+            {
+                Annotation = ann,
+                Root = root,
+                Position = (x, xEnd, centerY, lineY, fullH, scale, stackIndex) =>
+                {
+                    var w = scale(10);
+                    var h = scale(12);
+                    var rectY = fullH - scale(28);
+
+                    // Guide between line and top of rectangle
+                    var guideTop = Mathf.Min(lineY, rectY);
+                    var guideBot = Mathf.Max(lineY, rectY);
+                    guide.style.left = x;
+                    guide.style.top = guideTop;
+                    guide.style.height = Mathf.Max(0f, guideBot - guideTop);
+
+                    rect.style.left = x - w * 0.5f;
+                    rect.style.top = rectY;
+
+                    label.style.left = x - scale(60);
+                    label.style.top = rectY - scale(13);
                 }
             };
         }
@@ -379,7 +543,7 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             {
                 Annotation = ann,
                 Root = root,
-                Position = (x, centerY, lineY, fullH, scale, stackIndex) =>
+                Position = (x, xEnd, centerY, lineY, fullH, scale, stackIndex) =>
                 {
                     glyph.style.left = x - scale(4);
                     glyph.style.top = fullH - scale(20);
@@ -416,7 +580,7 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             {
                 Annotation = ann,
                 Root = root,
-                Position = (x, centerY, lineY, fullH, scale, stackIndex) =>
+                Position = (x, xEnd, centerY, lineY, fullH, scale, stackIndex) =>
                 {
                     line.style.left = x;
                     line.style.top = 0;
@@ -436,10 +600,12 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             // before invoking Position so coincident signal pairs render
             // as a column rather than overlapping each other.
             public int StackIndex;
-            // Caller invokes Position(x, centerY, lineY, fullH, scale, stackIdx).
-            // lineY is the track line's local-y at the annotation's distFt —
-            // used by POI types that draw a vertical guide.
-            public Action<float, float, float, float, Func<float, float>, int> Position;
+            // Caller invokes Position(x, xEnd, centerY, lineY, fullH, scale, stackIdx).
+            // For point annotations xEnd == x. For range annotations (area,
+            // span) xEnd is the end of the range in pixels. lineY is the
+            // track line's local-y at the annotation's distFt — used by POI
+            // types that draw a vertical guide.
+            public Action<float, float, float, float, float, Func<float, float>, int> Position;
         }
     }
 }
