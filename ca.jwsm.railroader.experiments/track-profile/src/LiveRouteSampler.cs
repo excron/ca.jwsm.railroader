@@ -38,10 +38,12 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
         // and fall back to last-known direction. ~0.022 m/s = ~0.05 mph.
         private const float StoppedVelocityThreshold = 0.05f;
 
-        // World-space distance (meters) within which a signal is considered
-        // "on the route" — should exceed the step size (50 ft = ~15 m) so
-        // signals between adjacent steps still match.
-        private const float SignalProximityThresholdM = 18f;
+        // Horizontal (XZ) distance (meters) within which a signal is
+        // considered "on the route". Should exceed the step size (50 ft
+        // ≈ 15 m) plus the typical pole-offset of a real signal alongside
+        // the rail (5-10 m). Y is ignored since signals are mounted at
+        // various heights above the rail.
+        private const float SignalProximityThresholdM = 25f;
 
         /// <summary>
         /// Per-frame state remembered across calls. Includes the last-known
@@ -253,12 +255,16 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
         private static void DetectSignalAnnotations(
             State state, RouteData dest, List<RouteStep> stepList)
         {
-            if (state.CachedSignals == null)
+            // Re-scan if cache is null OR empty. Signals load with their
+            // tiles — first-call scan can return zero before any tiles
+            // have loaded; we want to retry until the scene has them.
+            // Cheap check; harmless to repeat.
+            if (state.CachedSignals == null || state.CachedSignals.Count == 0)
             {
-                state.CachedSignals = new List<CTCSignal>(
-                    Object.FindObjectsOfType<CTCSignal>());
+                var found = Object.FindObjectsOfType<CTCSignal>();
+                state.CachedSignals = new List<CTCSignal>(found);
+                if (state.CachedSignals.Count == 0) return;
             }
-            if (state.CachedSignals.Count == 0) return;
 
             var thresholdSq = SignalProximityThresholdM * SignalProximityThresholdM;
             for (int i = 0; i < state.CachedSignals.Count; i++)
@@ -269,18 +275,24 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
 
                 float bestSq = thresholdSq;
                 float bestDistFt = 0f;
-                bool found = false;
+                bool foundStep = false;
                 for (int s = 0; s < stepList.Count; s++)
                 {
-                    var d = (sigPos - stepList[s].WorldPos).sqrMagnitude;
+                    // XZ distance only — signals sit on poles at varying
+                    // heights so Y component would push valid matches past
+                    // the threshold. Compare horizontal-plane distance only.
+                    var stepPos = stepList[s].WorldPos;
+                    var dx = sigPos.x - stepPos.x;
+                    var dz = sigPos.z - stepPos.z;
+                    var d = dx * dx + dz * dz;
                     if (d < bestSq)
                     {
                         bestSq = d;
                         bestDistFt = stepList[s].DistFt;
-                        found = true;
+                        foundStep = true;
                     }
                 }
-                if (!found) continue;
+                if (!foundStep) continue;
 
                 var aspect = GetSignalAspect(sig);
                 dest.Annotations.Add(new RouteData.Annotation
