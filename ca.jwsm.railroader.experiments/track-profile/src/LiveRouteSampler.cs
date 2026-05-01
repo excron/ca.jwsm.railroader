@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using Helpers;
 using Model;
 using Model.Definition;
 using Track;
@@ -224,11 +225,18 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
 
                     if (crossed != null && crossed != lastSwitchNode && graph.IsSwitch(crossed))
                     {
+                        // CTC switches use CTCDisplayThrown for the
+                        // user-visible state; raw isThrown only matches for
+                        // non-CTC switches. Match the legacy infrastructure
+                        // API's display-state convention.
+                        bool displayThrown = crossed.IsCTCSwitch
+                            ? crossed.CTCDisplayThrown
+                            : crossed.isThrown;
                         dest.Annotations.Add(new RouteData.Annotation
                         {
                             Type      = "switch",
                             DistFt    = stepList[i].DistFt,
-                            Diverging = crossed.isThrown ? "reversed" : "normal",
+                            Diverging = displayThrown ? "reversed" : "normal",
                         });
                         lastSwitchNode = crossed;
                     }
@@ -271,7 +279,14 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             {
                 var sig = state.CachedSignals[i];
                 if (sig == null) continue;
-                var sigPos = sig.transform.position;
+
+                // CRITICAL: signal.transform.position is in WORLD space (with
+                // floating-origin offset applied), but Graph.GetPosition
+                // returns GAME space (origin-anchored). The legacy web mod
+                // calls WorldTransformer.WorldToGame to bridge them — without
+                // this, the offset (potentially hundreds of meters) makes
+                // every proximity check fail.
+                var sigPos = WorldTransformer.WorldToGame(sig.transform.position);
 
                 float bestSq = thresholdSq;
                 float bestDistFt = 0f;
@@ -279,8 +294,8 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
                 for (int s = 0; s < stepList.Count; s++)
                 {
                     // XZ distance only — signals sit on poles at varying
-                    // heights so Y component would push valid matches past
-                    // the threshold. Compare horizontal-plane distance only.
+                    // heights so the Y component would push valid matches
+                    // past the threshold.
                     var stepPos = stepList[s].WorldPos;
                     var dx = sigPos.x - stepPos.x;
                     var dz = sigPos.z - stepPos.z;
@@ -294,23 +309,16 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
                 }
                 if (!foundStep) continue;
 
-                var aspect = GetSignalAspect(sig);
+                // CurrentAspect is the public, always-correct aspect read.
+                // Round-3 docs called LastShownAspect "internal"; CurrentAspect
+                // is the public-API counterpart used by the legacy mod.
                 dest.Annotations.Add(new RouteData.Annotation
                 {
                     Type   = "signal",
                     DistFt = bestDistFt,
-                    Aspect = AspectToKey(aspect),
+                    Aspect = AspectToKey(sig.CurrentAspect),
                 });
             }
-        }
-
-        private static SignalAspect GetSignalAspect(CTCSignal sig)
-        {
-            // SignalStorage is a parent MonoBehaviour the signal can find via
-            // GetComponentInParent. Its GetSignalAspect(id) is public.
-            var storage = sig.GetComponentInParent<SignalStorage>();
-            if (storage == null) return SignalAspect.Stop;
-            return storage.GetSignalAspect(sig.id);
         }
 
         private static string AspectToKey(SignalAspect a)

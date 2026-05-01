@@ -37,6 +37,7 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
         private static RouteData _route;
         private static LiveRouteSampler.State _samplerState;
         private static float _refreshTimer;
+        private static float _diagTimer;     // 1 Hz log throttle (debug)
 
         public static bool Load(UnityModManager.ModEntry modEntry)
         {
@@ -121,6 +122,46 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
 
             _profile.SetVisible(true);
             _profile.RefreshLive(_samplerState.LastReversed);
+
+            // 1 Hz diagnostic line. Helps confirm whether issues are in
+            // detection (counts) or rendering (counts look right but
+            // visuals don't match). Cheap; remove later when we're done
+            // diagnosing live-data correctness.
+            _diagTimer -= RefreshIntervalSeconds;
+            if (_diagTimer <= 0f)
+            {
+                _diagTimer = 1f;
+                EmitDiagnostic();
+            }
+        }
+
+        private static void EmitDiagnostic()
+        {
+            int swNorm = 0, swRev = 0;
+            int sigClear = 0, sigApproach = 0, sigStop = 0, sigOther = 0;
+            foreach (var a in _route.Annotations)
+            {
+                if (a.Type == "switch")
+                {
+                    if (a.Diverging == "reversed") swRev++; else swNorm++;
+                }
+                else if (a.Type == "signal")
+                {
+                    switch (a.Aspect)
+                    {
+                        case "clear":    sigClear++;    break;
+                        case "approach": sigApproach++; break;
+                        case "stop":     sigStop++;     break;
+                        default:         sigOther++;    break;
+                    }
+                }
+            }
+            var sigCacheCount = _samplerState.CachedSignals?.Count ?? 0;
+            Mod.Logger.Log(
+                $"[track-profile] grade={_route.CurrentGradePct:+0.0;-0.0;0.0}% " +
+                $"samples={_route.Samples.Count} " +
+                $"switches=W:{swNorm}/B:{swRev} " +
+                $"signals(scene:{sigCacheCount} matched:G{sigClear}/Y{sigApproach}/R{sigStop}/?{sigOther})");
         }
 
         private static void RebuildPanel()
