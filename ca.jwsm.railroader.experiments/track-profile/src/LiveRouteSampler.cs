@@ -73,6 +73,12 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             // is nearby we fall back to area.name. Built once when the
             // Area cache is populated.
             public Dictionary<Area, string> AreaDisplayNames;
+            // Inverted index: TrackSegment → IndustryComponents whose spans
+            // touch that segment. Lets DetectSpanAnnotations look up only
+            // the (typically 0-3) ICs relevant to the current step's
+            // segment instead of scanning every IC × every span every
+            // step. Built once when CachedIndustryComponents is populated.
+            public Dictionary<TrackSegment, List<IndustryComponent>> SegmentToIndustries;
         }
 
         // Proximity threshold (m) for stations — generous because stations
@@ -448,6 +454,54 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
         }
 
         /// <summary>
+        /// Inverted index: TrackSegment → IndustryComponents whose spans
+        /// touch that segment. Built once when the IC cache is populated.
+        /// Lets DetectSpanAnnotations look up only the (typically 0-3)
+        /// ICs relevant to the current step's segment instead of scanning
+        /// every IC × every span every step.
+        /// </summary>
+        private static void BuildSegmentToIndustriesIndex(State state)
+        {
+            state.SegmentToIndustries = new Dictionary<TrackSegment, List<IndustryComponent>>();
+            for (int i = 0; i < state.CachedIndustryComponents.Count; i++)
+            {
+                var ic = state.CachedIndustryComponents[i];
+                if (ic == null || ic.trackSpans == null) continue;
+                for (int j = 0; j < ic.trackSpans.Length; j++)
+                {
+                    var span = ic.trackSpans[j];
+                    if (span == null) continue;
+                    foreach (var seg in span.GetSegments())
+                    {
+                        if (seg == null) continue;
+                        if (!state.SegmentToIndustries.TryGetValue(seg, out var list))
+                        {
+                            list = new List<IndustryComponent>(2);
+                            state.SegmentToIndustries[seg] = list;
+                        }
+                        if (!list.Contains(ic)) list.Add(ic);
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Heuristic: a MapLabel whose text is purely a number (or near-
+        /// purely numeric) is almost certainly a milepost marker, not a
+        /// town name. Skip those — town names are alphabetic.
+        /// </summary>
+        private static bool IsLikelyMilepostLabel(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return true;
+            for (int i = 0; i < text.Length; i++)
+            {
+                var c = text[i];
+                if (!(char.IsDigit(c) || c == '.' || c == ' ')) return false;
+            }
+            return true;
+        }
+
+        /// <summary>
         /// Pre-compute Area → display-name lookup from cached MapLabels.
         /// For each Area, find the nearest MapLabel within the area's
         /// radius (XZ distance, with WorldTransformer applied so we're
@@ -481,13 +535,17 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
                 var areaPos = WorldTransformer.WorldToGame(area.transform.position);
                 var radiusSq = area.radius * area.radius;
 
-                // Find the nearest MapLabel inside the area's radius
+                // Find the nearest non-milepost MapLabel inside the area.
+                // Mileposts are MapLabels too — filter them out by text
+                // shape (purely numeric → milepost). Town names contain
+                // letters.
                 MapLabel best = null;
                 float bestSq = float.MaxValue;
                 for (int j = 0; j < labels.Length; j++)
                 {
                     var ml = labels[j];
-                    if (ml == null || string.IsNullOrEmpty(ml.text)) continue;
+                    if (ml == null) continue;
+                    if (IsLikelyMilepostLabel(ml.text)) continue;
                     var dx = areaPos.x - labelPositions[j].x;
                     var dz = areaPos.z - labelPositions[j].z;
                     var d = dx * dx + dz * dz;
@@ -515,37 +573,45 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
                 state.CachedIndustryComponents = new List<IndustryComponent>(
                     Object.FindObjectsOfType<IndustryComponent>());
                 if (state.CachedIndustryComponents.Count == 0) return;
+                BuildSegmentToIndustriesIndex(state);
             }
 
+            var index = state.SegmentToIndustries;
             string currentSpanLabel = null;
             float runStartFt = 0f;
 
             foreach (var step in stepList)
             {
-                // When multiple IndustryComponents claim the same step
-                // (a parent "Connelly" plus a child "Connelly Logs L2"),
-                // prefer the longest DisplayName — most-specific name
-                // wins. Without this, cache order (non-deterministic)
-                // determined which one we showed.
+                // O(0..few): only check ICs whose spans touch this step's
+                // segment. Without the index this loop was O(N_industries)
+                // — for a route with 1000 steps × 100 ICs that was the
+                // hottest code path in the whole sampler.
                 string matched = null;
                 int matchedLen = -1;
-                for (int i = 0; i < state.CachedIndustryComponents.Count; i++)
+                if (index != null && step.Location.segment != null
+                    && index.TryGetValue(step.Location.segment, out var candidates))
                 {
-                    var ic = state.CachedIndustryComponents[i];
-                    if (ic == null || ic.trackSpans == null) continue;
-                    bool hit = false;
-                    for (int j = 0; j < ic.trackSpans.Length; j++)
+                    for (int i = 0; i < candidates.Count; i++)
                     {
-                        var span = ic.trackSpans[j];
-                        if (span == null) continue;
-                        if (span.Contains(step.Location)) { hit = true; break; }
-                    }
-                    if (!hit) continue;
-                    var name = ic.DisplayName ?? "";
-                    if (name.Length > matchedLen)
-                    {
-                        matched = name;
-                        matchedLen = name.Length;
+                        var ic = candidates[i];
+                        if (ic == null || ic.trackSpans == null) continue;
+                        bool hit = false;
+                        for (int j = 0; j < ic.trackSpans.Length; j++)
+                        {
+                            var span = ic.trackSpans[j];
+                            if (span == null) continue;
+                            if (span.Contains(step.Location)) { hit = true; break; }
+                        }
+                        if (!hit) continue;
+                        var name = ic.DisplayName ?? "";
+                        // Tie-break overlapping ICs: prefer longer name
+                        // (most specific). Without this we'd flip between
+                        // a generic parent name and a child's specific one.
+                        if (name.Length > matchedLen)
+                        {
+                            matched = name;
+                            matchedLen = name.Length;
+                        }
                     }
                 }
 
