@@ -382,8 +382,13 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
                     if (a == null) continue;
                     if (a.Contains(step.WorldPos)) { matched = a; break; }
                 }
-                var areaId = matched?.identifier;
-                if (areaId != currentAreaId)
+                // Vanilla convention: use area.name (the GameObject name,
+                // human-readable like "Sylva" or "Nantahala") not
+                // area.identifier (internal short id). Verified across
+                // DailyReport, SwitchListController, StationAgent — they
+                // all read area.name.
+                var areaName = matched?.name;
+                if (areaName != currentAreaId)
                 {
                     if (currentAreaId != null)
                     {
@@ -396,7 +401,7 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
                             Identifier = currentAreaId,
                         });
                     }
-                    currentAreaId = areaId;
+                    currentAreaId = areaName;
                     runStartFt = step.DistFt;
                 }
             }
