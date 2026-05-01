@@ -231,18 +231,26 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
 
                     if (crossed != null && crossed != lastSwitchNode && graph.IsSwitch(crossed))
                     {
-                        // CTC switches use CTCDisplayThrown for the
-                        // user-visible state; raw isThrown only matches for
-                        // non-CTC switches. Match the legacy infrastructure
-                        // API's display-state convention.
-                        bool displayThrown = crossed.IsCTCSwitch
-                            ? crossed.CTCDisplayThrown
-                            : crossed.isThrown;
+                        // Use plain isThrown for every switch (CTC, ABS,
+                        // yard manual). It's the only field that reliably
+                        // reflects the physical alignment of the points,
+                        // which is what determines which way the route
+                        // actually goes (LocationFrom checks isThrown to
+                        // pick normal vs reversed).
+                        //
+                        // CTCDisplayThrown looks like the right "display"
+                        // field but is private-set, only updated inside
+                        // the isThrown setter when IsCTCSwitchUnlocked
+                        // is true (TrackNode.cs:35-38) — which is rarely
+                        // the case during normal CTC operation. For
+                        // typical locked CTC switches, CTCDisplayThrown
+                        // is permanently stale.
+                        bool displayThrown = crossed.isThrown;
 
                         // Use the node's actual world position to get a
                         // precise distFt instead of snapping to the step
-                        // grid. Without this, the dot jitters by ±step
-                        // size as the train moves through the grid.
+                        // grid — eliminates per-frame jitter as the train
+                        // moves through the grid.
                         var nodePos = WorldTransformer.WorldToGame(crossed.transform.position);
                         var preciseDistFt = ClosestStepDistFtInterpolated(nodePos, stepList);
 
@@ -251,7 +259,7 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
                             Type      = "switch",
                             DistFt    = preciseDistFt,
                             Diverging = displayThrown ? "reversed" : "normal",
-                            Label     = $"{crossed.id}|ctc={crossed.IsCTCSwitch}|t={crossed.isThrown}|d={crossed.CTCDisplayThrown}",
+                            Label     = $"{crossed.id}|ctc={crossed.IsCTCSwitch}|unlk={crossed.IsCTCSwitchUnlocked}|t={crossed.isThrown}|d={crossed.CTCDisplayThrown}",
                         });
                         lastSwitchNode = crossed;
                     }
