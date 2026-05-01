@@ -5,6 +5,7 @@ using Model.Definition;
 using Model.Ops;
 using Track;
 using Track.Signals;
+using UI.Map;
 using UnityEngine;
 
 namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
@@ -65,6 +66,13 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             public List<Area>             CachedAreas;
             public List<IndustryComponent> CachedIndustryComponents;
             public List<PassengerStop>    CachedStations;
+            // Hybrid display-name lookup: Areas give us geographic extent
+            // (range), MapLabels give us the visual display name (the same
+            // text shown on the minimap). For each Area we resolve to the
+            // nearest MapLabel within the area's radius; if no MapLabel
+            // is nearby we fall back to area.name. Built once when the
+            // Area cache is populated.
+            public Dictionary<Area, string> AreaDisplayNames;
         }
 
         // Proximity threshold (m) for stations — generous because stations
@@ -368,6 +376,7 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             {
                 state.CachedAreas = new List<Area>(Object.FindObjectsOfType<Area>());
                 if (state.CachedAreas.Count == 0) return;
+                BuildAreaDisplayNameLookup(state);
             }
 
             string currentAreaId = null;
@@ -394,11 +403,21 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
                         matchedRadius = a.radius;
                     }
                 }
-                // Vanilla convention: use area.name (the GameObject name,
-                // human-readable like "Sylva" or "Nantahala") not
-                // area.identifier (internal short id).
-                var areaName = matched?.name;
-                if (areaName != currentAreaId)
+                // Hybrid resolution:
+                //   - Geographic extent: Area.Contains (radius-based)
+                //   - Display name: nearest MapLabel within the area
+                //                  (same text shown on the minimap)
+                //   - Fallback: area.name if no MapLabel matched
+                string displayName = null;
+                if (matched != null)
+                {
+                    if (state.AreaDisplayNames == null
+                        || !state.AreaDisplayNames.TryGetValue(matched, out displayName))
+                    {
+                        displayName = matched.name;
+                    }
+                }
+                if (displayName != currentAreaId)
                 {
                     if (currentAreaId != null)
                     {
@@ -411,7 +430,7 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
                             Identifier = currentAreaId,
                         });
                     }
-                    currentAreaId = areaName;
+                    currentAreaId = displayName;
                     runStartFt = step.DistFt;
                 }
             }
@@ -425,6 +444,58 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
                     Label     = currentAreaId,
                     Identifier = currentAreaId,
                 });
+            }
+        }
+
+        /// <summary>
+        /// Pre-compute Area → display-name lookup from cached MapLabels.
+        /// For each Area, find the nearest MapLabel within the area's
+        /// radius (XZ distance, with WorldTransformer applied so we're
+        /// comparing in game space). Falls back to area.name when no
+        /// MapLabel sits inside the area.
+        ///
+        /// Run once when the Area cache is built — both Areas and
+        /// MapLabels are static map data, so this lookup doesn't need
+        /// per-refresh updates.
+        /// </summary>
+        private static void BuildAreaDisplayNameLookup(State state)
+        {
+            state.AreaDisplayNames = new Dictionary<Area, string>(state.CachedAreas.Count);
+
+            // Cache all MapLabels (includeInactive: true to match vanilla's
+            // MapBuilder discovery — labels can be on inactive panels).
+            var labels = Object.FindObjectsOfType<MapLabel>(includeInactive: true);
+            // Pre-convert label positions to game space — they're
+            // MonoBehaviours so transform.position is in world space.
+            var labelPositions = new Vector3[labels.Length];
+            for (int i = 0; i < labels.Length; i++)
+            {
+                if (labels[i] == null) continue;
+                labelPositions[i] = WorldTransformer.WorldToGame(labels[i].transform.position);
+            }
+
+            for (int i = 0; i < state.CachedAreas.Count; i++)
+            {
+                var area = state.CachedAreas[i];
+                if (area == null) continue;
+                var areaPos = WorldTransformer.WorldToGame(area.transform.position);
+                var radiusSq = area.radius * area.radius;
+
+                // Find the nearest MapLabel inside the area's radius
+                MapLabel best = null;
+                float bestSq = float.MaxValue;
+                for (int j = 0; j < labels.Length; j++)
+                {
+                    var ml = labels[j];
+                    if (ml == null || string.IsNullOrEmpty(ml.text)) continue;
+                    var dx = areaPos.x - labelPositions[j].x;
+                    var dz = areaPos.z - labelPositions[j].z;
+                    var d = dx * dx + dz * dz;
+                    if (d > radiusSq) continue;       // outside this area
+                    if (d < bestSq) { bestSq = d; best = ml; }
+                }
+
+                state.AreaDisplayNames[area] = best != null ? best.text : area.name;
             }
         }
 
