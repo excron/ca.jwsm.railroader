@@ -109,6 +109,28 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             var rect = _container.contentRect;
             if (rect.height <= 0f) return;
 
+            // Compute per-element stack indices so multiple POIs of the same
+            // type at the same x-bucket render stacked vertically rather
+            // than overlapping. Bucket width is twice the dot diameter —
+            // good enough to dedupe coincident signal pairs, doesn't merge
+            // adjacent-but-distinct switches.
+            var bucketSize = S(DotDiameterPx) * 2f / Mathf.Max(0.0001f, pxPerFt);
+            var stackCounts = new Dictionary<int, int>();
+            foreach (var elem in _elements)
+            {
+                if (elem.Annotation.Type != "signal" && elem.Annotation.Type != "switch")
+                {
+                    elem.StackIndex = 0;
+                    continue;
+                }
+                int key = ((int)Mathf.Round(elem.Annotation.DistFt / bucketSize)) * 1000
+                          + (elem.Annotation.Type == "signal" ? 1 : 2);  // separate buckets per type
+                int idx;
+                stackCounts.TryGetValue(key, out idx);
+                elem.StackIndex = idx;
+                stackCounts[key] = idx + 1;
+            }
+
             var centerY = rect.height * 0.5f;
             foreach (var elem in _elements)
             {
@@ -118,13 +140,10 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
                 if (!visible) continue;
 
                 var x = (ann.DistFt - startFt) * pxPerFt;
-                // Track-line Y at the POI's distFt — used so the vertical
-                // guide can connect the line itself (which moves with the
-                // grade) to the POI rail (anchored at chart bottom).
                 var lineY = (pxPerElevFt > 0f)
                     ? centerY - _route.ElevationAt(ann.DistFt) * pxPerElevFt
                     : centerY;
-                elem.Position(x, centerY, lineY, rect.height, S);
+                elem.Position(x, centerY, lineY, rect.height, S, elem.StackIndex);
             }
         }
 
@@ -190,15 +209,19 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             {
                 Annotation = ann,
                 Root = root,
-                Position = (x, centerY, lineY, fullH, scale) =>
+                Position = (x, centerY, lineY, fullH, scale, stackIndex) =>
                 {
-                    var poiY = fullH - scale(POIRailFromBottomPx);
                     var dSize = scale(DotDiameterPx);
                     var dRadius = dSize * 0.5f;
+                    // Stack index slides each successive same-bucket POI up
+                    // by one dot-height (+ 1 px gap) so coincident signal
+                    // pairs render as a vertical column rather than
+                    // overlapping single dot.
+                    var poiY = fullH - scale(POIRailFromBottomPx) - stackIndex * (dSize + 1f);
 
-                    // Guide goes between the line's Y and the dot's Y, on
-                    // whichever side the line is. Stops short of the dot so
-                    // it doesn't bisect it.
+                    // Guide goes between the line's Y and the topmost dot
+                    // in the stack so a stacked column shares one guide.
+                    // Stops short of the dot so it doesn't bisect it.
                     var guideTop = Mathf.Min(lineY, poiY - dRadius);
                     var guideBot = Mathf.Max(lineY, poiY - dRadius);
                     guide.style.left = x;
@@ -273,7 +296,7 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             {
                 Annotation = ann,
                 Root = root,
-                Position = (x, centerY, lineY, fullH, scale) =>
+                Position = (x, centerY, lineY, fullH, scale, stackIndex) =>
                 {
                     var tickH = ann.Labeled ? scale(10) : scale(8);
                     tick.style.left = x;
@@ -318,7 +341,7 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             {
                 Annotation = ann,
                 Root = root,
-                Position = (x, centerY, lineY, fullH, scale) =>
+                Position = (x, centerY, lineY, fullH, scale, stackIndex) =>
                 {
                     line.style.left = x;
                     line.style.top = scale(14);
@@ -356,7 +379,7 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             {
                 Annotation = ann,
                 Root = root,
-                Position = (x, centerY, lineY, fullH, scale) =>
+                Position = (x, centerY, lineY, fullH, scale, stackIndex) =>
                 {
                     glyph.style.left = x - scale(4);
                     glyph.style.top = fullH - scale(20);
@@ -393,7 +416,7 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
             {
                 Annotation = ann,
                 Root = root,
-                Position = (x, centerY, lineY, fullH, scale) =>
+                Position = (x, centerY, lineY, fullH, scale, stackIndex) =>
                 {
                     line.style.left = x;
                     line.style.top = 0;
@@ -408,10 +431,15 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
         {
             public RouteData.Annotation Annotation;
             public VisualElement Root;
-            // Caller invokes Position(x, centerY, lineY, fullH, scale) per
-            // refresh. lineY is the track line's local-y at the annotation's
-            // distFt — used by POI types that draw a vertical guide.
-            public Action<float, float, float, float, Func<float, float>> Position;
+            // StackIndex = 0 means the topmost-on-rail dot; >0 stacks above.
+            // AnnotationLayer.Update computes per-bucket per-type indices
+            // before invoking Position so coincident signal pairs render
+            // as a column rather than overlapping each other.
+            public int StackIndex;
+            // Caller invokes Position(x, centerY, lineY, fullH, scale, stackIdx).
+            // lineY is the track line's local-y at the annotation's distFt —
+            // used by POI types that draw a vertical guide.
+            public Action<float, float, float, float, Func<float, float>, int> Position;
         }
     }
 }

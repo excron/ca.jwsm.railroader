@@ -31,8 +31,8 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
     {
         public const float MetersPerFoot = 0.3048f;
         public const float FeetPerMeter  = 1f / MetersPerFoot;
-        public const float SampleStepFt = 50f;
-        public const float LookaheadFt = 5280f;
+        public const float SampleStepFt = 100f;          // coarser step at long lookahead
+        public const float LookaheadFt = 26400f;          // 5 miles ahead — clamps at end-of-track
         public const float BehindFt = 200f;
 
         // Velocity threshold (m/s) below which we treat the train as stopped
@@ -237,6 +237,8 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
                             Type      = "switch",
                             DistFt    = stepList[i].DistFt,
                             Diverging = displayThrown ? "reversed" : "normal",
+                            // Stash for diagnostic dump
+                            Label     = $"{crossed.id}|ctc={crossed.IsCTCSwitch}|t={crossed.isThrown}|d={crossed.CTCDisplayThrown}",
                         });
                         lastSwitchNode = crossed;
                     }

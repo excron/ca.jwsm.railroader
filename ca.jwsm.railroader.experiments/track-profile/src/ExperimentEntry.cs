@@ -24,7 +24,11 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
     /// </summary>
     public static class ExperimentEntry
     {
-        private const float RefreshIntervalSeconds = 0.2f;  // 5 Hz
+        // 30 Hz refresh — at 30 mph the train moves ~1.5 ft per tick instead
+        // of ~9 ft, eliminating the visible jumping of POIs as the train
+        // moves. Per-tick cost is small (route walk + signal proximity
+        // both linear in step count + scene signals).
+        private const float RefreshIntervalSeconds = 1f / 30f;
 
         public static UnityModManager.ModEntry Mod { get; private set; }
 
@@ -162,6 +166,14 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
                 $"samples={_route.Samples.Count} " +
                 $"switches=W:{swNorm}/B:{swRev} " +
                 $"signals(scene:{sigCacheCount} matched:G{sigClear}/Y{sigApproach}/R{sigStop}/?{sigOther})");
+            // Per-switch detail with the raw field values we read. If a
+            // switch's CTC display state isn't matching the in-game switch,
+            // these lines show whether ctc/t/d are reading what we expect.
+            foreach (var a in _route.Annotations)
+            {
+                if (a.Type != "switch") continue;
+                Mod.Logger.Log($"[track-profile]   switch @ {a.DistFt:0}ft  state={a.Diverging}  raw=[{a.Label}]");
+            }
         }
 
         private static void RebuildPanel()
