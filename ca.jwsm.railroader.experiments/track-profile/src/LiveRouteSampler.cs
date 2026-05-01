@@ -31,7 +31,13 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
     {
         public const float MetersPerFoot = 0.3048f;
         public const float FeetPerMeter  = 1f / MetersPerFoot;
-        public const float SampleStepFt = 100f;          // coarser step at long lookahead
+        // Step needs to be small enough to NOT skip past the interior
+        // segments of CTC switches (typical interior 5-30 ft). At 100 ft
+        // step we were missing CTC switches entirely; at 25 ft we catch
+        // most. POI positions get sub-step interpolation against world
+        // positions so the dots don't jitter on the step grid as the
+        // train moves.
+        public const float SampleStepFt = 25f;
         public const float LookaheadFt = 26400f;          // 5 miles ahead — clamps at end-of-track
         public const float BehindFt = 200f;
 
@@ -232,12 +238,19 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
                         bool displayThrown = crossed.IsCTCSwitch
                             ? crossed.CTCDisplayThrown
                             : crossed.isThrown;
+
+                        // Use the node's actual world position to get a
+                        // precise distFt instead of snapping to the step
+                        // grid. Without this, the dot jitters by ±step
+                        // size as the train moves through the grid.
+                        var nodePos = WorldTransformer.WorldToGame(crossed.transform.position);
+                        var preciseDistFt = ClosestStepDistFtInterpolated(nodePos, stepList);
+
                         dest.Annotations.Add(new RouteData.Annotation
                         {
                             Type      = "switch",
-                            DistFt    = stepList[i].DistFt,
+                            DistFt    = preciseDistFt,
                             Diverging = displayThrown ? "reversed" : "normal",
-                            // Stash for diagnostic dump
                             Label     = $"{crossed.id}|ctc={crossed.IsCTCSwitch}|t={crossed.isThrown}|d={crossed.CTCDisplayThrown}",
                         });
                         lastSwitchNode = crossed;
@@ -282,22 +295,18 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
                 var sig = state.CachedSignals[i];
                 if (sig == null) continue;
 
-                // CRITICAL: signal.transform.position is in WORLD space (with
-                // floating-origin offset applied), but Graph.GetPosition
-                // returns GAME space (origin-anchored). The legacy web mod
-                // calls WorldTransformer.WorldToGame to bridge them — without
-                // this, the offset (potentially hundreds of meters) makes
-                // every proximity check fail.
+                // signal.transform.position is in WORLD space (with floating-
+                // origin offset applied), but Graph.GetPosition returns GAME
+                // space. WorldToGame bridges them.
                 var sigPos = WorldTransformer.WorldToGame(sig.transform.position);
 
+                // Threshold check first (XZ-only — signals sit on poles
+                // at varying heights so the Y component would push valid
+                // matches past the threshold).
                 float bestSq = thresholdSq;
-                float bestDistFt = 0f;
                 bool foundStep = false;
                 for (int s = 0; s < stepList.Count; s++)
                 {
-                    // XZ distance only — signals sit on poles at varying
-                    // heights so the Y component would push valid matches
-                    // past the threshold.
                     var stepPos = stepList[s].WorldPos;
                     var dx = sigPos.x - stepPos.x;
                     var dz = sigPos.z - stepPos.z;
@@ -305,22 +314,75 @@ namespace Ca.Jwsm.Railroader.Experiments.TrackProfile
                     if (d < bestSq)
                     {
                         bestSq = d;
-                        bestDistFt = stepList[s].DistFt;
                         foundStep = true;
                     }
                 }
                 if (!foundStep) continue;
 
-                // CurrentAspect is the public, always-correct aspect read.
-                // Round-3 docs called LastShownAspect "internal"; CurrentAspect
-                // is the public-API counterpart used by the legacy mod.
+                // Interpolated distFt against the two adjacent steps so
+                // the dot doesn't jitter on the step grid as the train
+                // moves through it.
+                var preciseDistFt = ClosestStepDistFtInterpolated(sigPos, stepList);
+
                 dest.Annotations.Add(new RouteData.Annotation
                 {
                     Type   = "signal",
-                    DistFt = bestDistFt,
+                    DistFt = preciseDistFt,
                     Aspect = AspectToKey(sig.CurrentAspect),
                 });
             }
+        }
+
+        /// <summary>
+        /// Compute a precise distFt for a world-space POI by finding the
+        /// closest step and linearly interpolating against the better
+        /// adjacent neighbor. Uses XZ-only distance (Y can vary).
+        ///
+        /// Without interpolation, POI positions snap to the step grid and
+        /// jitter by ± step_size as the grid shifts under the moving
+        /// train. With interpolation, motion is sub-step smooth.
+        /// </summary>
+        private static float ClosestStepDistFtInterpolated(Vector3 worldPos, List<RouteStep> stepList)
+        {
+            if (stepList.Count == 0) return 0f;
+            if (stepList.Count == 1) return stepList[0].DistFt;
+
+            float bestSq = float.MaxValue;
+            int bestIdx = 0;
+            for (int i = 0; i < stepList.Count; i++)
+            {
+                var dx = worldPos.x - stepList[i].WorldPos.x;
+                var dz = worldPos.z - stepList[i].WorldPos.z;
+                var d = dx * dx + dz * dz;
+                if (d < bestSq) { bestSq = d; bestIdx = i; }
+            }
+
+            // Pick the better-of-two adjacent neighbors to interpolate against.
+            int neighborIdx;
+            if (bestIdx == 0) neighborIdx = 1;
+            else if (bestIdx == stepList.Count - 1) neighborIdx = bestIdx - 1;
+            else
+            {
+                var dxL = worldPos.x - stepList[bestIdx - 1].WorldPos.x;
+                var dzL = worldPos.z - stepList[bestIdx - 1].WorldPos.z;
+                var dL = dxL * dxL + dzL * dzL;
+                var dxR = worldPos.x - stepList[bestIdx + 1].WorldPos.x;
+                var dzR = worldPos.z - stepList[bestIdx + 1].WorldPos.z;
+                var dR = dxR * dxR + dzR * dzR;
+                neighborIdx = (dL < dR) ? bestIdx - 1 : bestIdx + 1;
+            }
+
+            // Lerp t = d_to_best / (d_to_best + d_to_neighbor). When pos
+            // sits exactly at a step, t=0 and we return that step's distFt.
+            // When midway, t≈0.5.
+            var pBest = stepList[bestIdx].WorldPos;
+            var pNeigh = stepList[neighborIdx].WorldPos;
+            var dBest = Mathf.Sqrt(bestSq);
+            var dxN = worldPos.x - pNeigh.x;
+            var dzN = worldPos.z - pNeigh.z;
+            var dNeigh = Mathf.Sqrt(dxN * dxN + dzN * dzN);
+            var t = dBest / (dBest + dNeigh + 0.0001f);
+            return Mathf.Lerp(stepList[bestIdx].DistFt, stepList[neighborIdx].DistFt, t);
         }
 
         private static string AspectToKey(SignalAspect a)
