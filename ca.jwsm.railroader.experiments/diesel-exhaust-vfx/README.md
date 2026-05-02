@@ -119,11 +119,9 @@ coexisting (driving soot only) or replaced entirely.
 ### Why a separate Unity authoring project
 
 The `.vfx` source asset must be authored in a Unity project and compiled
-to a `VisualEffectAsset` runtime form. This authoring project lives
-outside the monorepo at
-`C:\Users\jsm12\OneDrive\Documents\Game_Projects\unity\RR-VFX-Graph\`
-(Unity 2022.3.62f2, URP, Universal 3D template). It has its own git
-repo and is *not* a submodule — fully independent.
+to a `VisualEffectAsset` runtime form. The authoring project lives
+outside this monorepo (Unity 2022.3.62f2, URP, Universal 3D template),
+in its own git repo, *not* a submodule — fully independent.
 
 The authoring project's `Assets/Editor/BundleBuilder.cs` provides a
 **Tools > Build Diesel Exhaust Bundle** menu item that:
@@ -238,10 +236,10 @@ diesel-exhaust-vfx/
     └── DieselExhaustControllerPatch.cs  # the OnEnable prefix
 ```
 
-Authoring project (separate git repo, not in monorepo):
+Authoring project (separate git repo, lives outside this monorepo):
 
 ```
-RR-VFX-Graph/
+<authoring-project>/
 ├── Assets/
 │   ├── DieselExhaust.vfx         # the authoring graph
 │   ├── Cloud03_8x8_alpha.png     # greyscale density mask (vanilla's texture, channel-duplicated)
