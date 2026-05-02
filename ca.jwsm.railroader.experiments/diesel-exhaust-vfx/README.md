@@ -47,8 +47,12 @@ older diesel engines.
   the same graph)
 - 🟡 `IExhaustPolicy` abstraction — per-locomotive engine-state model
   driving each layer's color and rate
-- 🟡 Heat distortion via VFX Graph's distortion output (requires URP
-  Opaque Texture enabled in the game's settings)
+- 🟡 Heat distortion via VFX Graph's distortion output. **Vanilla ships
+  with URP `Opaque Texture` disabled** across all 5 quality levels, so
+  this layer requires a small runtime patch enabling
+  `supportsCameraOpaqueTexture` on the active URP asset before
+  distortion shaders can sample the framebuffer. See "Heat distortion"
+  below for the cost and trade-offs.
 
 ---
 
@@ -182,6 +186,32 @@ graph (multi-output VFX), each pulling from its own Blackboard
 properties. Single greyscale texture (`Cloud03_8x8_alpha`) serves all
 three. Heat distortion uses VFX Graph's procedural noise — no additional
 texture needed.
+
+### Heat distortion (URP requirement)
+
+Distortion shaders need to sample the post-opaque framebuffer, which URP
+exposes via `_CameraOpaqueTexture`. Vanilla Railroader ships this
+feature **disabled** across all quality levels (`m_RequireOpaqueTexture: 0`)
+to save a per-frame blit they don't otherwise need.
+
+Enabling it is a one-liner runtime patch in `ExperimentEntry.Load()`
+that sets `supportsCameraOpaqueTexture = true` on the active URP asset
+(and ideally walks every quality level's asset so it persists across
+quality changes). Cost is modest:
+
+- One additional full-screen render target per camera (~8 MB @ 1080p,
+  ~32 MB @ 4K)
+- One blit per camera per frame (sub-millisecond on modern GPUs)
+
+It's a global pipeline change — every camera, not just exhaust-adjacent
+ones — so it's worth gating behind the heat-distortion layer being
+enabled at all (e.g., respect a "disable heat distortion" toggle for
+players on weaker hardware).
+
+The authoring project's URP asset must have Opaque Texture enabled
+*independently* for distortion to render in editor preview — that's a
+manual checkbox in its URP asset Inspector, separate from the in-game
+runtime patch.
 
 ### Property contract per layer
 
