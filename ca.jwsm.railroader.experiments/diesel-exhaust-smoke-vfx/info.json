@@ -1,0 +1,9 @@
+{
+  "Id": "ca.jwsm.railroader.experiments.diesel-exhaust-smoke-vfx",
+  "DisplayName": "Experiment: Diesel Exhaust Smoke VFX",
+  "Author": "Josh St. Marie",
+  "Version": "0.0.1.0",
+  "ManagerVersion": "0.27.0",
+  "AssemblyName": "ca.jwsm.railroader.experiments.diesel-exhaust-smoke-vfx.dll",
+  "EntryMethod": "Ca.Jwsm.Railroader.Experiments.DieselExhaustSmokeVfx.ExperimentEntry.Load"
+}

@@ -1,0 +1,67 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyName>ca.jwsm.railroader.experiments.diesel-exhaust-smoke-vfx</AssemblyName>
+    <RootNamespace>Ca.Jwsm.Railroader.Experiments.DieselExhaustSmokeVfx</RootNamespace>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+  </PropertyGroup>
+
+  <!--
+    Sibling experiment to diesel-exhaust-vfx. Same VFX-asset-swap pattern,
+    but ships a non-fire smoke variant authored separately. Code is kept
+    isolated from the original mod so iteration on one doesn't risk the
+    other's known-good state. Only one experiment should be enabled in
+    UMM at a time — both Harmony-patch the same controller method.
+  -->
+
+  <ItemGroup>
+    <Reference Include="UnityEngine">
+      <HintPath>$(ManagedDir)\UnityEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(ManagedDir)\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AssetBundleModule">
+      <HintPath>$(ManagedDir)\UnityEngine.AssetBundleModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.VFXModule">
+      <HintPath>$(ManagedDir)\UnityEngine.VFXModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(ManagedDir)\Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityModManager">
+      <HintPath>$(UmmDir)\UnityModManager.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(UmmDir)\0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="info.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Assets\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <Target Name="DeployMod" AfterTargets="Build">
+    <PropertyGroup>
+      <ModDeployDir>$(GameDir)\Mods\$(AssemblyName)</ModDeployDir>
+    </PropertyGroup>
+    <ItemGroup>
+      <DeployFiles Include="$(OutputPath)**\*.*" />
+    </ItemGroup>
+    <MakeDir Directories="$(ModDeployDir)" />
+    <Copy SourceFiles="@(DeployFiles)"
+          DestinationFolder="$(ModDeployDir)\%(RecursiveDir)"
+          SkipUnchangedFiles="true" />
+    <Message Text="Deployed $(AssemblyName) -&gt; $(ModDeployDir)" Importance="high" />
+  </Target>
+
+</Project>
