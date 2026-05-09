@@ -10,24 +10,35 @@ namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.Solver
     /// integrated implicitly via a tridiagonal linear solve (Thomas
     /// algorithm).
     ///
-    /// Coupler model is piecewise linear: soft inside the slack range,
-    /// hard outside. Per-coupler stiffness varies by current stretch, so
-    /// the tridiagonal matrix has non-uniform off-diagonals — but the
-    /// structure is unchanged and Thomas remains O(N) with no iteration.
+    /// Coupler model is dead-zone with hard walls: zero force inside the
+    /// slack window, near-rigid spring outside. Per-coupler stiffness
+    /// varies by current stretch, so the tridiagonal matrix has non-uniform
+    /// off-diagonals — but the structure is unchanged and Thomas remains
+    /// O(N) with no iteration.
     ///
     /// That's the whole "Featherstone for 1D" payload: the structure of
     /// the matrix gives the answer in one O(N) sweep, regardless of
     /// coupler stiffness or how nonlinear the regime transitions are.
+    ///
+    /// Loop structure (after fusion pass):
+    ///   - One forward sweep that builds β/F_old, computes per-car external
+    ///     forces, applies traction at loco indices, builds the matrix row,
+    ///     and runs the Thomas forward elimination — all per car.
+    ///   - One backward sweep that runs Thomas back-substitution, updates
+    ///     velocities and stretches, and writes back per-car positions to
+    ///     vanilla transforms — all per car.
     /// </summary>
     internal static class ImplicitChainSolver
     {
         // Per-tick scratch buffers, sized to the largest consist seen.
-        private static float[] _diag    = new float[64];   // diagonal of A, length N
-        private static float[] _beta    = new float[64];   // per-coupler β, length N-1
-        private static float[] _rhs     = new float[64];   // RHS, then dv after solve, length N
-        private static float[] _cPrime  = new float[64];   // working super-diag in Thomas, length N-1
-        private static float[] _dPrime  = new float[64];   // working RHS in Thomas, length N
-        private static float[] _fOld    = new float[64];   // per-coupler explicit force F(stretch_old)
+        // _rhs is no longer written after Thomas forward populates _dPrime,
+        // but kept around as a working buffer during the forward sweep.
+        private static float[] _diag    = new float[64];
+        private static float[] _beta    = new float[64];
+        private static float[] _rhs     = new float[64];
+        private static float[] _cPrime  = new float[64];
+        private static float[] _dPrime  = new float[64];
+        private static float[] _fOld    = new float[64];
 
         private static float _nextLogTime;
 
@@ -41,112 +52,189 @@ namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.Solver
             var v       = consist.Velocities;
             var m       = consist.Masses;
             var stretch = consist.Stretches;
+            var cyl     = consist.CylinderPressurePsi;
+            var cars    = consist.CarsArray;
+            var locoIdx = consist.LocoIndices;
+            var locoTe  = consist.LocoTeNewtons;
+            var graph   = Graph.Shared;
 
-            // ---- 1. Per-coupler stiffness/damping/force from old stretches ----
+            // Force-model constants (lifted out of the loop).
+            float decelMax = ChainSolverConfig.BrakeForceMaxDecelMps2;
+            float maxCyl   = ChainSolverConfig.CylinderMaxPsi;
+            float dragK    = ChainSolverConfig.DragLinearPerKg;
+            float gAcc     = ChainSolverConfig.G;
+            float orient   = consist.OrientationSign;
+            float invDt    = 1f / Mathf.Max(dt, 1e-4f);
+            float dt2      = dt * dt;
+
+            // Traction setup. thrFactor folds throttle × reverser_sign × dt
+            // so the inner loop just multiplies by per-loco TE.
+            float reverserSign = Mathf.Abs(consist.Reverser) < 0.01f ? 0f : Mathf.Sign(consist.Reverser);
+            float thrFactor = (reverserSign != 0f && consist.Throttle > 0f)
+                ? consist.Throttle * reverserSign * dt
+                : 0f;
+            int locoPtr = 0;
+            int locoCount = locoIdx.Length;
+
+            // ---- Forward pass: β + per-car forces + traction + matrix + Thomas forward ----
             //
-            // Evaluate the piecewise force law at each coupler's current
-            // stretch. Caches β_i = k_eff_i·dt² + c_eff_i·dt and F_old_i for
-            // use in matrix and RHS construction below.
-
-            for (int i = 0; i < n - 1; i++)
-            {
-                CouplerLaw(stretch[i], out float fOld, out float kEff, out float cEff);
-                _fOld[i] = fOld;
-                _beta[i] = kEff * dt * dt + cEff * dt;
-            }
-
-            // ---- 2. External forces per car (brake, drag, grade) into _rhs[] ----
+            // Five loops fuse into one. Per-iteration body, in order:
+            //   1. β[i] / F_old[i] for couplers (only if i < n-1)
+            //   2. Per-car external forces (brake/drag/grade) → rhs_i
+            //   3. Traction if this car is a loco (sorted-LocoIndices walker)
+            //   4. Matrix row build (boundary/interior branches)
+            //   5. Thomas forward elimination step
             //
-            // Then add traction at each loco's index. Result is F_external_i·dt.
+            // Data dependencies satisfied because all of these walk forward
+            // and prior-iteration values (β[i-1], _cPrime[i-1], _dPrime[i-1])
+            // are exactly what we need.
 
-            ComputeExternalForcesScaled(consist, dt, _rhs);
-
-            // ---- 3. Add coupler explicit-force contributions to RHS ----
-            //
-            // For interior i: RHS[i] += F_old_{i-1}·dt - F_old_i·dt
-            //                          + β_{i-1}·(v_{i-1} - v_i) + β_i·(v_{i+1} - v_i)
-            // Boundaries omit the missing-coupler terms.
-
-            if (n == 1)
+            for (int i = 0; i < n; i++)
             {
-                _diag[0] = m[0];
-                // _rhs[0] is just F_ext_0·dt; nothing more to add (no couplers).
-            }
-            else
-            {
-                // i == 0 (front, only right coupler β[0] connects to car 1)
-                _diag[0] = m[0] + _beta[0];
-                _rhs[0] += -_fOld[0] * dt + _beta[0] * (v[1] - v[0]);
-
-                // i == n-1 (rear, only left coupler β[n-2])
-                _diag[n - 1] = m[n - 1] + _beta[n - 2];
-                _rhs[n - 1] += +_fOld[n - 2] * dt + _beta[n - 2] * (v[n - 2] - v[n - 1]);
-
-                // Interior
-                for (int i = 1; i < n - 1; i++)
-                {
-                    _diag[i] = m[i] + _beta[i - 1] + _beta[i];
-                    _rhs[i] += (_fOld[i - 1] - _fOld[i]) * dt
-                            + _beta[i - 1] * (v[i - 1] - v[i])
-                            + _beta[i]     * (v[i + 1] - v[i]);
-                }
-            }
-
-            // ---- 4. Thomas algorithm: tridiagonal solve in-place ----
-            //
-            // Sub- and super-diagonals are A[i,i+1] = A[i+1,i] = -β[i].
-            // Stored implicitly via _beta[].
-
-            // Forward sweep
-            float denom0 = _diag[0];
-            _cPrime[0] = (n > 1) ? (-_beta[0] / denom0) : 0f;
-            _dPrime[0] = _rhs[0] / denom0;
-
-            for (int i = 1; i < n; i++)
-            {
-                float subDiag = -_beta[i - 1];
-                float denom = _diag[i] - subDiag * _cPrime[i - 1];
+                // ---- 1. Coupler β + F_old (only valid for couplers, 0..n-2) ----
                 if (i < n - 1)
                 {
-                    float supDiag = -_beta[i];
-                    _cPrime[i] = supDiag / denom;
+                    CouplerLaw(stretch[i], out float fOldI, out float kEff, out float cEff);
+                    _fOld[i] = fOldI;
+                    _beta[i] = kEff * dt2 + cEff * dt;
                 }
-                _dPrime[i] = (_rhs[i] - subDiag * _dPrime[i - 1]) / denom;
+
+                // ---- 2. Per-car external forces (brake / drag / grade) ----
+                var car = cars[i];
+                float v_i = v[i];
+                float m_i = m[i];
+
+                float vSign = Mathf.Abs(v_i) < 1e-4f ? 0f : Mathf.Sign(v_i);
+                float brakeFrac = cyl[i] / maxCyl;
+                if (brakeFrac < 0f) brakeFrac = 0f;
+                else if (brakeFrac > 1f) brakeFrac = 1f;
+                float fBrakeRaw = -brakeFrac * m_i * decelMax * vSign;
+                float maxBrakeMag = Mathf.Abs(v_i) * m_i * invDt;
+                float fBrake = Mathf.Sign(fBrakeRaw) * Mathf.Min(Mathf.Abs(fBrakeRaw), maxBrakeMag);
+
+                float fDrag = -dragK * m_i * v_i;
+
+                float fGrade = 0f;
+                if (graph != null)
+                {
+                    float gradePct = graph.GradeAtLocation(car.WheelBoundsF);
+                    fGrade = -m_i * gAcc * gradePct * 0.01f * orient;
+                }
+
+                float rhs_i = (fBrake + fDrag + fGrade) * dt;
+
+                // ---- 3. Traction at locos (MU: shared throttle × per-loco TE) ----
+                // locoIdx is sorted ascending; a single walking pointer keeps
+                // this O(N) total across the whole consist with no per-car
+                // search.
+                if (thrFactor != 0f && locoPtr < locoCount && locoIdx[locoPtr] == i)
+                {
+                    rhs_i += thrFactor * locoTe[locoPtr];
+                    locoPtr++;
+                }
+
+                // ---- 4. Matrix row + coupler explicit-force terms ----
+                float diag_i;
+                if (n == 1)
+                {
+                    diag_i = m_i;
+                    // No couplers when there's only one car.
+                }
+                else if (i == 0)
+                {
+                    // Front car: only a right coupler β[0].
+                    float betaR = _beta[0];
+                    diag_i = m_i + betaR;
+                    rhs_i += -_fOld[0] * dt + betaR * (v[1] - v_i);
+                }
+                else if (i == n - 1)
+                {
+                    // Rear car: only a left coupler β[n-2].
+                    float betaL = _beta[i - 1];
+                    diag_i = m_i + betaL;
+                    rhs_i += +_fOld[i - 1] * dt + betaL * (v[i - 1] - v_i);
+                }
+                else
+                {
+                    // Interior car: both couplers contribute.
+                    float betaL = _beta[i - 1];
+                    float betaR = _beta[i];
+                    diag_i = m_i + betaL + betaR;
+                    rhs_i += (_fOld[i - 1] - _fOld[i]) * dt
+                          + betaL * (v[i - 1] - v_i)
+                          + betaR * (v[i + 1] - v_i);
+                }
+
+                _diag[i] = diag_i;
+                _rhs[i]  = rhs_i;
+
+                // ---- 5. Thomas forward elimination step ----
+                // Sub- and super-diagonals are A[i,i+1] = A[i+1,i] = -β[i],
+                // stored implicitly via _beta[].
+                if (i == 0)
+                {
+                    _cPrime[0] = (n > 1) ? (-_beta[0] / diag_i) : 0f;
+                    _dPrime[0] = rhs_i / diag_i;
+                }
+                else
+                {
+                    float subDiag = -_beta[i - 1];
+                    float denom = diag_i - subDiag * _cPrime[i - 1];
+                    if (i < n - 1)
+                        _cPrime[i] = -_beta[i] / denom;
+                    _dPrime[i] = (rhs_i - subDiag * _dPrime[i - 1]) / denom;
+                }
             }
 
-            // ---- 5. Fused back-sub + velocity update + stretch update ----
+            // ---- Backward pass: Thomas back-sub + v + stretch + position writeback ----
             //
-            // Three operations collapse into one backward pass because the
-            // data dependencies line up:
+            // Three N-sized operations fuse cleanly because all data
+            // dependencies cooperate:
             //   - Thomas back-sub naturally walks n-1 → 0
             //   - Velocity update v[i] += dv_i is order-independent
-            //   - Stretch update stretch[i] += (v[i] - v[i+1]) · dt:
-            //       at iter i (backward), v[i+1] was updated last iter,
-            //       v[i] gets updated this iter — both current.
-            //
-            // dv is carried in a local; _rhs[] no longer needs to be
-            // written after the Thomas forward pass produced _dPrime[].
+            //   - Stretch update reads v[i] (just updated) and v[i+1]
+            //     (updated in the previous backward iter) — both current
+            //   - Position writeback only needs v[i] (just updated) and the
+            //     car's current WheelBoundsF — purely local
+            // dv carried in a local; _rhs[] no longer needs to be written.
+
+            // Tail car (i == n-1): no upstream dep, no stretch entry, but
+            // still wants velocity update and writeback.
+            {
+                int i = n - 1;
+                float dv = _dPrime[i];
+                v[i] += dv;
+                WriteCarPosition(graph, cars[i], v[i] * dt * orient);
+            }
 
             float dvNext = _dPrime[n - 1];
-            v[n - 1] += dvNext;
-
             for (int i = n - 2; i >= 0; i--)
             {
                 float dvCur = _dPrime[i] - _cPrime[i] * dvNext;
                 v[i] += dvCur;
                 stretch[i] += (v[i] - v[i + 1]) * dt;
+                WriteCarPosition(graph, cars[i], v[i] * dt * orient);
                 dvNext = dvCur;
             }
 
-            // ---- 6. Visual writeback ----
-            WriteCarPositions(consist, dt);
-
-            // ---- 7. Diagnostics, rate-limited ----
+            // ---- Diagnostics, rate-limited ----
             if (Time.realtimeSinceStartup >= _nextLogTime)
             {
                 _nextLogTime = Time.realtimeSinceStartup + 1f;
                 LogState(consist);
             }
+        }
+
+        /// <summary>
+        /// Tiny inline-able helper for the per-car position writeback.
+        /// Skips no-op if ds is essentially zero or graph is unavailable.
+        /// </summary>
+        private static void WriteCarPosition(Graph graph, Model.Car car, float ds)
+        {
+            if (graph == null) return;
+            if (Mathf.Abs(ds) < 1e-7f) return;
+            var newLoc = graph.LocationByMoving(car.WheelBoundsF, ds);
+            car.PositionWheelBoundsFront(newLoc, graph, MovementInfo.Zero, update: true);
         }
 
         /// <summary>
@@ -183,86 +271,6 @@ namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.Solver
             }
         }
 
-        /// <summary>
-        /// Computes F_external_i · dt for every car, into the destination
-        /// buffer. Per-car: brake, drag, grade. Per loco: traction summed
-        /// into the loco's car index (MU contract).
-        /// </summary>
-        private static void ComputeExternalForcesScaled(ManagedConsist c, float dt, float[] outScaled)
-        {
-            int n = c.CarCount;
-
-            float decelMax = ChainSolverConfig.BrakeForceMaxDecelMps2;
-            float maxCyl   = ChainSolverConfig.CylinderMaxPsi;
-            float dragK    = ChainSolverConfig.DragLinearPerKg;
-            float g        = ChainSolverConfig.G;
-            var graph      = Graph.Shared;
-            var cyl        = c.CylinderPressurePsi;
-
-            // Pass 1: per-car non-traction forces (brake, drag, grade).
-            //
-            // Brake force is now driven by *this car's* cylinder pressure,
-            // which propagates from the lead loco via the brake-pipe field.
-            // Cars far from the loco brake later because their pipe pressure
-            // drops later — the wave through the train.
-
-            for (int i = 0; i < n; i++)
-            {
-                var car = c.CarsArray[i];
-                float v_i = c.Velocities[i];
-                float m_i = c.Masses[i];
-
-                float vSign = Mathf.Abs(v_i) < 1e-4f ? 0f : Mathf.Sign(v_i);
-                float brakeFrac = (cyl.Length > i ? cyl[i] : 0f) / maxCyl;
-                if (brakeFrac < 0f) brakeFrac = 0f;
-                else if (brakeFrac > 1f) brakeFrac = 1f;
-                float fBrakeRaw = -brakeFrac * m_i * decelMax * vSign;
-                float maxBrakeMag = Mathf.Abs(v_i) * m_i / Mathf.Max(dt, 1e-4f);
-                float fBrake = Mathf.Sign(fBrakeRaw) * Mathf.Min(Mathf.Abs(fBrakeRaw), maxBrakeMag);
-
-                float fDrag = -dragK * m_i * v_i;
-
-                float fGrade = 0f;
-                if (graph != null)
-                {
-                    float gradePct = graph.GradeAtLocation(car.WheelBoundsF);
-                    float gradeRad = gradePct * 0.01f;
-                    fGrade = -m_i * g * gradeRad * c.OrientationSign;
-                }
-
-                outScaled[i] = (fBrake + fDrag + fGrade) * dt;
-            }
-
-            // Pass 2: traction at each loco (MU: shared throttle/reverser).
-            float reverserSign = Mathf.Abs(c.Reverser) < 0.01f ? 0f : Mathf.Sign(c.Reverser);
-            if (reverserSign != 0f && c.Throttle > 0f)
-            {
-                float thr = c.Throttle * reverserSign;
-                for (int j = 0; j < c.LocoIndices.Length; j++)
-                {
-                    int idx = c.LocoIndices[j];
-                    outScaled[idx] += thr * c.LocoTeNewtons[j] * dt;
-                }
-            }
-        }
-
-        private static void WriteCarPositions(ManagedConsist c, float dt)
-        {
-            var graph = Graph.Shared;
-            if (graph == null) return;
-
-            int n = c.CarCount;
-            for (int i = 0; i < n; i++)
-            {
-                float ds = c.Velocities[i] * dt * c.OrientationSign;
-                if (Mathf.Abs(ds) < 1e-7f) continue;
-
-                var car = c.CarsArray[i];
-                var newLoc = graph.LocationByMoving(car.WheelBoundsF, ds);
-                car.PositionWheelBoundsFront(newLoc, graph, MovementInfo.Zero, update: true);
-            }
-        }
-
         private static void EnsureBuffers(int n)
         {
             if (_diag.Length < n)
@@ -272,7 +280,7 @@ namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.Solver
                 _rhs     = new float[sz];
                 _cPrime  = new float[sz];
                 _dPrime  = new float[sz];
-                _beta    = new float[sz];     // sized N to spare; only N-1 used
+                _beta    = new float[sz];
                 _fOld    = new float[sz];
             }
         }
