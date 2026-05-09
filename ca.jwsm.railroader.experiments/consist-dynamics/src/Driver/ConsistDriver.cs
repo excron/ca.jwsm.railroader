@@ -43,42 +43,79 @@ namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.Driver
             {
                 if (consist.LeadLoco == null) continue;
 
-                // Air always ticks — pipe pressure can change while the
-                // consist is at rest (charging up after spawn, brake set
-                // by player while stopped, etc.). Cheap relative to chain.
-                AirPipeSolver.Step(consist, dt);
+                // Combined rest check — single walk over the per-car arrays
+                // determines whether each subsystem can sleep this tick.
+                ScanRestState(consist, vEps, out bool airQuiescent, out bool chainAtRest, out float maxCyl);
 
-                // Chain solver gated by motion + input. We use cylinder
-                // pressure as a "non-rest" signal so a stopped consist
-                // with brakes applied still gets force evaluated correctly.
-                bool atRest = MaxAbsVelocity(consist) < vEps;
-                bool noInput = Mathf.Abs(consist.Throttle) < iEps
-                            && consist.TrainBrake < iEps
-                            && MaxCylinderPressure(consist) < 1f;
-                if (atRest && noInput) continue;
+                // Air sleep: skip the diffusion solve + cylinder ODE +
+                // vanilla writeback when there's no input demand and the
+                // pipe field is at charge with cylinders at zero. Anything
+                // that could change the air state (TrainBrake KVO, a pipe
+                // value out of equilibrium, a cylinder above zero) flips
+                // airQuiescent off and the solver runs as normal.
+                if (!airQuiescent)
+                    AirPipeSolver.Step(consist, dt);
+
+                // Chain sleep: skip the tridiagonal solve when all
+                // velocities are below ε, no throttle/brake input is being
+                // demanded, and no cylinder pressure exists that could
+                // produce brake force. (Brake force at rest is zero anyway
+                // because sign(v)≈0, but a high cylinder during a coasting
+                // brake-application transient is the edge case we care about.)
+                bool noChainInput = Mathf.Abs(consist.Throttle) < iEps
+                                  && consist.TrainBrake < iEps
+                                  && maxCyl < 1f;
+                if (chainAtRest && noChainInput) continue;
 
                 ImplicitChainSolver.Step(consist, dt);
             }
         }
 
-        private static float MaxCylinderPressure(ManagedConsist c)
+        /// <summary>
+        /// Single-pass scan of per-car arrays that returns both the chain
+        /// at-rest state, the air quiescent state, and the max cylinder
+        /// pressure (used by the chain gate). Replaces three separate walks
+        /// with one over the same data.
+        /// </summary>
+        private static void ScanRestState(
+            ManagedConsist c, float vEps,
+            out bool airQuiescent, out bool chainAtRest, out float maxCyl)
         {
-            float max = 0f;
-            var p = c.CylinderPressurePsi;
-            for (int i = 0; i < p.Length; i++) if (p[i] > max) max = p[i];
-            return max;
-        }
+            // TrainBrake is a fast pre-check for air quiescence — if the
+            // player is currently demanding brakes, we don't even bother
+            // walking the arrays.
+            bool airInputQuiet = c.TrainBrake < ChainSolverConfig.InputEps;
 
-        private static float MaxAbsVelocity(ManagedConsist c)
-        {
-            float max = 0f;
-            var v = c.Velocities;
-            for (int i = 0; i < v.Length; i++)
+            float charge = ChainSolverConfig.ChargePressurePsi;
+            const float PipeEps = 0.1f;   // psi — within this much of charge counts as "at charge"
+            const float CylEps  = 0.1f;   // psi — within this much of zero counts as "released"
+
+            var v    = c.Velocities;
+            var cyl  = c.CylinderPressurePsi;
+            var pipe = c.PipePressurePsi;
+
+            bool airAtEquilibrium = airInputQuiet;
+            bool atRest = true;
+            float cylMax = 0f;
+
+            int n = v.Length;
+            for (int i = 0; i < n; i++)
             {
-                float a = v[i] < 0f ? -v[i] : v[i];
-                if (a > max) max = a;
+                float vi = v[i];
+                float vAbs = vi < 0f ? -vi : vi;
+                if (vAbs > vEps) atRest = false;
+
+                float cylI = cyl[i];
+                if (cylI > cylMax) cylMax = cylI;
+                if (cylI > CylEps) airAtEquilibrium = false;
+
+                float pipeDrop = charge - pipe[i];
+                if (pipeDrop > PipeEps || pipeDrop < -PipeEps) airAtEquilibrium = false;
             }
-            return max;
+
+            airQuiescent = airAtEquilibrium;
+            chainAtRest  = atRest;
+            maxCyl       = cylMax;
         }
 
         private static void SyncRegistry(IntegrationSetManager manager)

@@ -109,10 +109,22 @@ namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.State
 
             for (int i = 0; i < n; i++)
             {
-                Masses[i] = _cars[i].Weight * LbToKg;
+                var car = _cars[i];
+                Masses[i] = car.Weight * LbToKg;
                 // Start charged & released — typical yard-spawn condition.
                 PipePressurePsi[i]     = Solver.ChainSolverConfig.ChargePressurePsi;
                 CylinderPressurePsi[i] = 0f;
+
+                // Sync vanilla air state to our just-initialized values so
+                // the HUD pill bar doesn't show stale pre-suppression data
+                // if AirPipeSolver.Step is skipped on the next tick (which
+                // it will be — we just set everything to its quiescent
+                // resting state).
+                if (car?.air != null)
+                {
+                    car.air.BrakeLine.Pressure     = PipePressurePsi[i];
+                    car.air.BrakeCylinder.Pressure = CylinderPressurePsi[i];
+                }
             }
 
             float totalTe = 0f;
