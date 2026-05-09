@@ -181,12 +181,20 @@ namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.Solver
         {
             int n = c.Cars.Count;
 
-            float decelMax = ChainSolverConfig.DecelTrainBrakeMaxMps2;
+            float decelMax = ChainSolverConfig.BrakeForceMaxDecelMps2;
+            float maxCyl   = ChainSolverConfig.CylinderMaxPsi;
             float dragK    = ChainSolverConfig.DragLinearPerKg;
             float g        = ChainSolverConfig.G;
             var graph      = Graph.Shared;
+            var cyl        = c.CylinderPressurePsi;
 
             // Pass 1: per-car non-traction forces (brake, drag, grade).
+            //
+            // Brake force is now driven by *this car's* cylinder pressure,
+            // which propagates from the lead loco via the brake-pipe field.
+            // Cars far from the loco brake later because their pipe pressure
+            // drops later — the wave through the train.
+
             for (int i = 0; i < n; i++)
             {
                 var car = c.Cars[i];
@@ -194,7 +202,10 @@ namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.Solver
                 float m_i = c.Masses[i];
 
                 float vSign = Mathf.Abs(v_i) < 1e-4f ? 0f : Mathf.Sign(v_i);
-                float fBrakeRaw = -c.TrainBrake * m_i * decelMax * vSign;
+                float brakeFrac = (cyl.Length > i ? cyl[i] : 0f) / maxCyl;
+                if (brakeFrac < 0f) brakeFrac = 0f;
+                else if (brakeFrac > 1f) brakeFrac = 1f;
+                float fBrakeRaw = -brakeFrac * m_i * decelMax * vSign;
                 float maxBrakeMag = Mathf.Abs(v_i) * m_i / Mathf.Max(dt, 1e-4f);
                 float fBrake = Mathf.Sign(fBrakeRaw) * Mathf.Min(Mathf.Abs(fBrakeRaw), maxBrakeMag);
 

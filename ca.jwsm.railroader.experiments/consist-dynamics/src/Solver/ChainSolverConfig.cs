@@ -31,8 +31,28 @@ namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.Solver
         public static float CouplerDampingHard   = 1.0e6f;     // N·s/m, dissipates wall impacts
 
         // ---- External forces ----
-        public static float DecelTrainBrakeMaxMps2 = 1.5f;
-        public static float DragLinearPerKg        = 0.0008f;
+        public static float DragLinearPerKg = 0.0008f;
+
+        // ---- Air system (phase 3a: 1D pressure field along consist) ----
+        //
+        // Brake pipe modeled as 1D diffusion field. Per-car nodes connected
+        // by an effective diffusion coefficient. Implicit tridiagonal solve
+        // (Thomas) — same solver pattern as the chain dynamics.
+        //
+        // Lead loco's TrainBrake KVO drives a Dirichlet BC: target pipe
+        // pressure at the lead's node. Diffusion propagates the pressure
+        // change rearward; the rate of propagation is the visible "wave"
+        // through the train.
+
+        public const float ChargePressurePsi    = 90f;     // charged brake pipe at rest
+        public const float CylinderMaxPsi       = 64f;     // full-service cylinder
+        public const float CylinderRatio        = 2.46f;   // P_cyl_target = (90 - P_pipe) * ratio
+        public static float CylinderTimeConstantSec = 1.5f; // exponential lag of cyl toward target
+
+        public static float PipeDiffusionM2PerSec = 2.0e5f; // diffusion coefficient (tune for visible wave)
+        public static float PipeNominalSpacingM   = 15f;    // avg car length, used as Δs in field discretization
+
+        public static float BrakeForceMaxDecelMps2 = 1.5f;  // applied at cylinder = max
 
         // ---- At-rest gating (per consist) ----
         public static float AtRestVelocityEps = 0.01f;

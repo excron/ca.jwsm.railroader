@@ -40,13 +40,30 @@ namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.Driver
             {
                 if (consist.LeadLoco == null) continue;
 
+                // Air always ticks — pipe pressure can change while the
+                // consist is at rest (charging up after spawn, brake set
+                // by player while stopped, etc.). Cheap relative to chain.
+                AirPipeSolver.Step(consist, dt);
+
+                // Chain solver gated by motion + input. We use cylinder
+                // pressure as a "non-rest" signal so a stopped consist
+                // with brakes applied still gets force evaluated correctly.
                 bool atRest = MaxAbsVelocity(consist) < vEps;
                 bool noInput = Mathf.Abs(consist.Throttle) < iEps
-                            && consist.TrainBrake < iEps;
+                            && consist.TrainBrake < iEps
+                            && MaxCylinderPressure(consist) < 1f;
                 if (atRest && noInput) continue;
 
                 ImplicitChainSolver.Step(consist, dt);
             }
+        }
+
+        private static float MaxCylinderPressure(ManagedConsist c)
+        {
+            float max = 0f;
+            var p = c.CylinderPressurePsi;
+            for (int i = 0; i < p.Length; i++) if (p[i] > max) max = p[i];
+            return max;
         }
 
         private static float MaxAbsVelocity(ManagedConsist c)
