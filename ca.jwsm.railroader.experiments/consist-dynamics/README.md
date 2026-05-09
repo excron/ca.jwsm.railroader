@@ -1,138 +1,144 @@
-# Experiment: Consist Dynamics
+# Consist Dynamics — Test Build
 
-## Question
+> **Heads up:** this is an **experimental, narrowly-scoped physics replacement**, not a polished mod. It deliberately suppresses chunks of vanilla so we can author consist motion + brake-pipe air ourselves and measure what *we* cost. Many things you'd expect to work are intentionally dead.
+>
+> If you're poking at this without context, read the "What's wired / not wired" sections below before judging anything.
 
-Can we wholesale **replace** vanilla's consist physics with our own solver — completely killing all vanilla physics CPU — and watch how FPS curves as consists scale from 1 → many cars?
+## What this is
 
-The musing that led here: vanilla's `IntegrationSet` runs a 4-iteration Gauss-Seidel constraint solver to converge each tick. Featherstone-class direct multibody solvers have **no chain iteration** — they replace the relaxation loop with structured recursion. Whether that translates to a visible FPS win at parity car count is the empirical question this experiment answers.
+A clean-room replacement of two vanilla physics systems on a per-consist basis:
 
-This experiment exists to play with the idea, not to ship a replacement. Findings may be worth taking to the dev; the code itself is throwaway.
+1. **Consist motion** — replaces vanilla's `IntegrationSet` 4-iteration constraint solver with a per-car arc-length state, compliant 1D couplers, and an implicit tridiagonal direct solve (Thomas algorithm) — single O(N) sweep, no chain iteration regardless of coupler stiffness.
+2. **Brake-pipe air** — replaces vanilla's per-car valve-flow model with a 1D pressure diffusion field along the consist, also solved implicitly via tridiagonal Thomas. Visible propagation waves via diffusion coefficient tuning.
 
-## Scope and non-goals
+Vanilla physics is **wholesale suppressed** for these systems via three Harmony prefix-false patches (`TrainController.FixedUpdate`, `Car.FixedUpdate`, `BaseLocomotive.FixedUpdate`). Anything those methods used to do — including a lot of visual-side bookkeeping — is gone unless we explicitly replicate it.
 
-**In scope (phase 1):**
-- Suppress vanilla physics tick wholesale. No background CPU bleed.
-- Drive consists from our own solver.
-- Read control inputs (throttle / reverser / train brake) from vanilla HUD via KVO.
-- Use vanilla spawner UI for consist creation. Adopt whatever cars vanilla puts on rails.
-- Diesel only — SD7 / GP9 values from `Car.Weight` and `BaseLocomotive.RatedTractiveEffort`.
+## What's wired (it should work)
 
-**Out of scope:**
-- Multiplayer (vanilla networking is dead).
-- Signaling, dispatch, AI, derailment, schedules, audio.
-- Steam, electric.
-- Brake pipe dynamics (phase 1 uses trivial brake force; phase 4 = gradient-field replacement).
-- Coupler compliance (phase 1 = single rigid body; phase 2 = compliant; phase 3 = Featherstone).
+- **Vanilla spawner UI** — spawn cars however you normally do, we adopt them on the next tick
+- **Vanilla HUD reverser, throttle, train brake** — KVO subscriptions; we react to whatever the HUD writes
+- **Vanilla HUD pill bar (brake state)** — we write to `car.air.BrakeCylinder.Pressure`, the HUD reads it, you see our brake state colored on the pills
+- **Multi-loco MU traction** — every `BaseLocomotive` in the consist contributes its own `RatedTractiveEffort` under the shared HUD throttle/reverser
+- **Coupler aiming visuals** — vanilla's `PositionCoupler()` is called automatically by `Car.PositionWheelBoundsFront()` so couplers rotate to face each other; gaps still visible at full slack but knuckles stay aimed
+- **Slack action with hard stops** — couplers do nothing inside the ±4 cm slack window, then engage near-rigidly
+- **Grade resistance** — read from `Graph.GradeAtLocation` per car
+- **Body + truck rendering** — vanilla's `PositionWheelBoundsFront` does the work; we just supply the location
 
-## Vanilla suppression strategy
+## What's NOT wired (caveats / gotchas)
 
-**Three Harmony prefix patches return `false` (skip method body):**
+### Critical to know
 
-| Patch target | What it kills |
-|---|---|
-| `TrainController.FixedUpdate` | Master physics tick: air, IntegrationSet, topology reconcile, networking, spatial hash |
-| `Car.FixedUpdate` | Per-car: anglecock animation, brake-applied visuals, end-gear sync, mover ticks (PrimeMover/SteamEngine) |
-| `BaseLocomotive.FixedUpdate` | Per-loco: tractive-effort/wheel-slip computation, cab-control updates |
+- **MU+CutOut:** completely ignored. We don't read the CutOut flag — every loco contributes traction whether the player has CutOut'd it or not. Whatever MU group the player set up, we treat all locos as in-MU.
+- **MU directionality:** all cars in a consist are assumed to face the same direction as the lead loco. **Don't test with reverse-facing DPUs / pushers** — they'll fight the consist (apply traction backwards). Normal head-end MU stacks face forward; that's fine.
+- **Coupling / uncoupling during play:** we adopt a consist once on first sight and **don't refresh** it. If you couple or uncouple cars at runtime, our per-car state will desync from vanilla's grouping. Restart the game / reload the save after any coupling change.
+- **Independent (loco) brake:** not modeled. Only the train brake.
+- **Dynamic brake:** not modeled.
+- **Wheel slip / adhesion:** not modeled. A single SD7 will trivially pull 300 cars (which is unphysical — that's why our 300-car rolling test required head-end MU).
+- **Anglecocks:** not honored. Brake pipe is assumed continuous through the whole consist regardless of anglecock state.
+- **Brake pipe rupture / emergency application:** not modeled. Service apps only.
 
-After patching, the only Unity FixedUpdate work that should consume CPU on consist objects is ours. Verified by profiling.
+### Audio / visuals that died with the suppression
 
-The `IntegrationSet` and `IntegrationSetManager` instances stay alive (vanilla code holds refs), but they sit inert. We use `IntegrationSet` purely as a topology source — "which cars are coupled together" — and never read from `Element` or write into it.
+- **Engine sound (PrimeMover / SteamEngine):** dead. Their tick is suppressed.
+- **Brake exhaust audio:** dead.
+- **Coupler slack-in / slack-out audio:** dead.
+- **Anglecock visual animations:** dead (`UpdateAnglecockControl` was inside `Car.FixedUpdate`).
+- **Brake-applied visual flag** (brake glow, etc.): dead.
+- **Cab control visual sweeps:** dead (`UpdateCabControls` in `BaseLocomotive.FixedUpdate`). HUD inputs still work — you just don't see virtual gauges in the 3D cab moving.
 
-## Phase plan
+### Other untouched systems that may behave oddly
 
-1. **Plumbing** — three patches + driver + dummy single-DOF solver. SD7 + 5 boxcars on flat track moves under throttle from vanilla HUD. Confirms the cut.
-2. **Per-car arc-length state with compliant 1D couplers** — RR-equivalent baseline (Gauss-Seidel relaxation). FPS sweep at 10/50/100/200 cars.
-3. **Featherstone direct solver** — same scenarios. FPS sweep. Direct comparison vs phase 2.
-4. **Gradient-field track + air replacement** — replace per-car `Graph.GradeAtLocation` calls with batched field eval. Replace brake pipe with a gradient/diffusion model.
+- **Multiplayer:** dead. Vanilla networking is in the suppressed `TrainController.FixedUpdate`. Single-player only.
+- **Signaling, dispatch, AutoEngineer, AI:** untouched code, but it reads vanilla physics state (positions, velocities) that we now author. Some of it should work, some won't. Not the focus.
+- **Steam locomotives:** can spawn but engine sim is dead. Diesel-only test.
+- **Derailment, condition wear, brake heating:** unmodeled.
+- **Brake reservoir** (separate from brake cylinder): not maintained. Vanilla's AB valve uses BR; we skip it and drive cylinder directly off pipe-pressure drop.
+- **`car.air.brakePercent`:** never updated. Anything reading it sees stale 0.
 
-Each phase is a checkpoint with a question: *did anything change in a way that matters?*
+## How to test
 
-## Status
+1. Make sure the mod is in `<Railroader>/Mods/ca.jwsm.railroader.experiments.consist-dynamics/` (use `deploy.ps1` from this folder)
+2. Launch Railroader. Confirm `[ca.jwsm.railroader.experiments.consist-dynamics] Active` in `Railroader_Data/Managed/UnityModManager/Log.txt`
+3. Spawn a consist with the vanilla spawner, on flat track preferably for first runs
+4. For long consists, MU multiple locos at the head — single locos won't move 100+ cars now that physics is honest
+5. Use the vanilla HUD to drive — reverser, throttle, train brake
+6. Watch the pill bar for brake-wave propagation when applying / releasing
 
-**Phase 1: COMPLETE** (2026-05-09).
+### Things to look for
 
-### What's validated
+- **At rest, brake released:** all pills green, no motion
+- **Apply train brake:** pill at lead reddens immediately, wave propagates rearward over ~1–2 sec, lead car decelerates first
+- **Throttle from rest:** lead loco accelerates first, slack runs out coupler-by-coupler rearward (visible "BANG" as each hits its hard stop), trailing cars kick in seconds later on long consists
+- **Steady cruise:** all cars at the same speed, all couplers stable at slack-out (positive stretch ~ slack limit)
+- **Long consist (300+ cars):** clearly visible propagation lag in both motion and brakes — that's the headline behavior
 
-- **Suppression is honest.** Three Harmony prefix-false patches (`TrainController.FixedUpdate`, `Car.FixedUpdate`, `BaseLocomotive.FixedUpdate`) cleanly kill all vanilla physics-side per-tick CPU. No background bleed observable in profiling.
-- **Adoption flow works.** Driver postfix on `TrainController.FixedUpdate` walks `IntegrationSetManager` each tick, registers new consists into `ManagedConsist`, attaches KVO observers. Consists with no loco are skipped automatically.
-- **Vanilla HUD inputs reach us.** KVO subscriptions on lead loco's `KeyValueObject` for `Throttle`, `Reverser`, `TrainBrake` fire on every HUD interaction. Confirmed via per-callback log lines.
-- **Vanilla writeback path works.** `Car.PositionWheelBoundsFront(newLoc, Graph.Shared, MovementInfo.Zero, update: true)` correctly drives the visible Transform + truck rotation + body positioning. We do not need to touch `Element` or duplicate vanilla's per-car visual logic.
-- **Solver drives motion.** Single-DOF integrator (throttle × TE × reverser_sign − brake − tiny drag → semi-implicit Euler) produces visible acceleration on real consists. SD7 + 300 cars accelerates and runs out under throttle.
+### Logs (`UnityModManager/Log.txt`)
 
-### Baseline FPS sweep
+- `[adopt]` — once per consist when first seen: car count, loco count, total mass, sum TE
+- `[input]` — KVO change: throttle / reverser / trainBrake values
+- `[solver]` — once per second per active consist: lead/rear velocity, max coupler stretch, count of bottomed-out couplers
 
-Single SD7 driving a flat-ground consist of N boxcars. Vanilla physics fully suppressed; only our trivial single-DOF solver is doing work.
+## Phase status
 
-| Cars | FPS | Frame ms | Δ over idle | µs/car (per tick) |
-|---|---|---|---|---|
-| 0 | 180 | 5.56 | — | — |
-| 21 | 120 | 8.33 | 2.77 | 317 |
-| 51 | 100 | 10.00 | 4.44 | 174 |
-| 151 | 75 | 13.33 | 7.78 | 77 |
-| 301 | 65 | 15.38 | 9.82 | 42 |
+| Phase | Status | What it does |
+|---|---|---|
+| 1: rigid plumbing | done (in git history) | Single-DOF solver, validated suppression + writeback |
+| 2: per-car + compliant couplers | done | Tridiagonal implicit solve, hard-stop dead zone, MU traction |
+| 3a: 1D brake-pipe field | done | Implicit diffusion solve, per-car cylinder dynamics, HUD pill writeback |
+| 3b: anglecocks, MU+CutOut, indep brake | not started | |
+| 4: gradient-field track caching | not started | Replace per-car `Graph.*` queries with batched field eval |
 
-Per-car CPU drops 4× from 21 → 301 cars (317 → 42 µs/car/tick). Marginal cost in the 151 → 301 segment is **~7.3 µs per added car** — off-screen cars are nearly free thanks to vanilla's `IsVisible`-gated `PositionAccuracy.Standard` path. The curve is plateauing around **~13 ms/tick** for arbitrarily long consists.
+## FPS reference points (single SD7 unless noted; flat track)
 
-### Vanilla comparison (informal, not apples-to-apples)
+| Cars | Engines | FPS | Notes |
+|---|---|---|---|
+| 0 (idle) | — | ~180 | Baseline; our solver doing nothing per consist |
+| 21 | 1 SD7 | ~115–120 | Phase 2 cost vs phase 1 (~120) is ~+0.4 ms/frame |
+| 51 | 1 SD7 | ~100 | |
+| 151 | 1 SD7 | ~75 | |
+| 305 | MU stack | ~50–60 | Above vanilla's ~40 at similar scale, while doing strictly more work |
 
-| Scenario | Cars | Engines | FPS | ms/frame |
-|---|---|---|---|---|
-| Our solver (single SD7) | 301 | 1 | 65 | 15.38 |
-| Vanilla (multi-engine to overcome slip) | 309 | several | 40 | 25.00 |
+Phase 3a air added negligible cost over phase 2 in these tests.
 
-Vanilla pays ~10 ms/frame more at this scale. **But vanilla is doing strictly more work**: 4-iteration coupler constraint solve, brake-pipe sub-stepping, wheel-slip / adhesion limit, brake passes, networking, spatial hash. Our trivial solver has none of those. The "we're faster" framing is misleading; the right framing is **we have ~10 ms/frame of budget into which phase 2 / 3 / 4 can put real physics work and still be competitive.**
+## Architecture (one-liner)
 
-### Bugs found & fixed during phase 1
+> Vanilla owns the world's existence and grouping. We own all motion, all brake-pipe air, and the brake force. Vanilla's `Car.PositionWheelBoundsFront` and `IntegrationSetManager` topology survive; everything else physics-related is ours. We write into vanilla's renderable state (transforms, `air.BrakeCylinder.Pressure`) so vanilla's HUD and visuals show our truth.
 
-1. **Anchor-and-walk-back writeback** — initial implementation positioned all cars relative to the lead loco's `WheelBoundsF` walking backward by cumulative car length, assuming `IntegrationSet.Cars` enumerates lead-first. It doesn't. Fixed by advancing each car independently along its own spline location by `ds`. No anchor math, no offset arithmetic — each car simply moves along the rails it's already on.
+See [`docs/research/physics-vanilla-survey.md`](../../docs/research/physics-vanilla-survey.md) (in the parent repo) for the recon that this design is built on.
 
-2. **Mass unit error (off by 2000×)** — `Car.Weight` is in **pounds**, not short tons. The `physics-vanilla-survey.md` doc says short tons; **the doc is wrong.** Confirmed via `Car.GravityForce` dividing Weight by 2000 (lb→short-ton) and `IntegrationSet.cs:393/430` multiplying by 0.453592 (lb→kg). Fixed our conversion to use `LbToKg = 0.453592f`. Survey doc fix saved as a memory for next time it's edited.
-
-### Open questions / known gaps
-
-- **Single SD7 trivially pulls 300 cars.** That's because we have no wheel-slip / adhesion model. Vanilla rejects this scenario realistically. Worth folding into a future phase (phase 2 candidate, or separate phase 4).
-- **No grade resistance.** `Graph.GradeAtLocation` exists and is cheap to fold in; not yet wired.
-- **Lead loco picking is naive** — first `BaseLocomotive` in `IntegrationSet.Cars` enumeration. May not match `IsLeadCandidate` flag state. Fine for phase 1, will revisit.
-- **Audio is gone.** Engine sims (PrimeMover, SteamEngine) aren't ticking via `Car.FixedUpdate` (suppressed). Acceptable for the experiment; if we want flavor back in a later phase we'll do our own.
-- **Mass / TE recompute happens once on adoption.** If load weight changes (industries), our cached `TotalMassKg` goes stale. Phase 2 should refresh on relevant KVO events.
-
-### Plan for phase 2
-
-Replace the single-DOF model with **per-car arc-length state and 1D compliant couplers** (RR-equivalent baseline). Each car gets its own `s_i`, `v_i`. Couplers are linear springs with damping; constraint relaxation via configurable Gauss-Seidel sweep count (1, 2, 4, 8, 16). Run the same FPS sweep at 21 / 51 / 151 / 301 cars at each sweep count. Plot:
-
-- **FPS vs sweep count** at fixed N → cost of iteration
-- **Stability boundary (max coupler stiffness without ringing) vs sweep count** → the headline finding for the Gauss-Seidel side
-- **FPS vs N at fixed sweep count** → scaling slope
-
-Phase 3 then swaps the solver to Featherstone (no chain iteration) and we run the same sweeps for direct comparison.
-
-## Layout
+## File layout
 
 ```
 consist-dynamics/
-├── README.md                           ← this
-├── *.csproj                            ← UMM mod, references Assembly-CSharp + Harmony
-├── info.json                           ← UMM manifest
+├── README.md                              ← this
+├── deploy.ps1                             ← build + copy to Mods/
+├── info.json                              ← UMM manifest
+├── ca.jwsm.railroader.experiments.consist-dynamics.csproj
 └── src/
-    ├── ExperimentEntry.cs              ← UMM Load; installs Harmony patches
+    ├── ExperimentEntry.cs                 ← UMM Load, installs Harmony patches
     ├── Patches/
-    │   └── SuppressVanillaPhysics.cs   ← 3 prefix-false patches
+    │   └── SuppressVanillaPhysics.cs      ← three prefix-false patches
     ├── Driver/
-    │   └── ConsistDriver.cs            ← postfix on TC.FixedUpdate; iterates manager
+    │   └── ConsistDriver.cs               ← postfix on TC.FixedUpdate, registry sync, dispatch
     ├── State/
-    │   └── ManagedConsist.cs           ← our per-consist state (s, v, mass, leadLoco, cars)
+    │   └── ManagedConsist.cs              ← per-consist state (parallel arrays)
     ├── Solver/
-    │   └── RigidConsistSolver.cs       ← phase 1: single-DOF integrator
+    │   ├── ChainSolverConfig.cs           ← all tunable knobs
+    │   ├── ImplicitChainSolver.cs         ← motion: tridiagonal Thomas
+    │   └── AirPipeSolver.cs               ← brake pipe: tridiagonal Thomas
     └── Input/
-        └── ControlObserver.cs          ← KVO subscriptions for HUD inputs
+        └── ControlObserver.cs             ← KVO subscriptions for HUD inputs
 ```
 
-## Notes on shape adherence
+## Tunable knobs (in `ChainSolverConfig.cs`)
 
-This experiment violates the production "additive, never replacing" rule for physics — **intentionally**, and only here. Per [`../README.md`](../README.md), experiments may patch directly and skip api kernel primitives. The replacement strategy informs nothing about how production physics is structured; production stays additive.
+If something feels wrong, these are the dials:
 
-## Reference
+- `CouplerSlackLimitMeters` (default 0.04 = 4 cm) — vanilla matches at ~4 cm total slack
+- `CouplerStiffnessHard` / `CouplerDampingHard` — wall stiffness past slack limit
+- `PipeDiffusionM2PerSec` — bigger = faster brake-pipe propagation
+- `CylinderTimeConstantSec` — bigger = more sluggish per-car brake response
+- `BrakeForceMaxDecelMps2` — peak deceleration at full cylinder pressure
+- `DragLinearPerKg` — rolling resistance fudge factor
 
-- `docs/research/physics-vanilla-survey.md` — vanilla's physics surface (read first if extending)
-- `ARCHITECTURE.md` — workspace layout
-- `../README.md` — experiments folder conventions
+Restart the mod after recompile. Hot-reload of these is not wired.

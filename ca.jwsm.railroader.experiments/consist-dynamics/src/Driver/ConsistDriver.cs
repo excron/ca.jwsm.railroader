@@ -1,5 +1,5 @@
 using System.Collections.Generic;
-using HarmonyLib;
+using System.Reflection;
 using Model.Physics;
 using UnityEngine;
 using Ca.Jwsm.Railroader.Experiments.ConsistDynamics.Input;
@@ -22,13 +22,16 @@ namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.Driver
         private static readonly Dictionary<IntegrationSet, ControlObserver> _observers
             = new Dictionary<IntegrationSet, ControlObserver>();
 
+        // Cache the FieldInfo for TrainController._integrationSets once.
+        // Harmony.Traverse allocates per call; FieldInfo.GetValue does not.
+        private static readonly FieldInfo _integrationSetsField = typeof(TrainController)
+            .GetField("_integrationSets", BindingFlags.Instance | BindingFlags.NonPublic);
+
         public static void Tick(TrainController tc, float dt)
         {
-            if (tc == null) return;
+            if (tc == null || _integrationSetsField == null) return;
 
-            var manager = Traverse.Create(tc)
-                .Field("_integrationSets")
-                .GetValue<IntegrationSetManager>();
+            var manager = (IntegrationSetManager)_integrationSetsField.GetValue(tc);
             if (manager == null) return;
 
             SyncRegistry(manager);

@@ -17,6 +17,14 @@ namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.State
         public IntegrationSet VanillaSet { get; }
         public IReadOnlyList<Car> Cars => _cars;
 
+        // Direct-array view for hot loops in solvers. CarsArray[i] is a
+        // direct array indexer (no interface dispatch) — meaningful for
+        // 300+ car consists where the solvers walk the list 4-6 times
+        // per tick. Length is CarCount; do NOT iterate beyond that.
+        // Refreshed alongside _cars in Refresh().
+        public Car[] CarsArray { get; private set; } = System.Array.Empty<Car>();
+        public int CarCount    => _cars.Count;
+
         // Lead loco — the one we observe for HUD inputs. In an MU group
         // vanilla syncs control properties across all locos, so reading
         // any one of them gives the right value; we pick the first found.
@@ -95,6 +103,7 @@ namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.State
             Stretches           = (n > 1) ? new float[n - 1] : System.Array.Empty<float>();
             PipePressurePsi     = new float[n];
             CylinderPressurePsi = new float[n];
+            CarsArray           = _cars.ToArray();   // direct-array view for solver hot paths
             LocoIndices   = locoIdx.ToArray();
             LocoTeNewtons = locoTe.ToArray();
 

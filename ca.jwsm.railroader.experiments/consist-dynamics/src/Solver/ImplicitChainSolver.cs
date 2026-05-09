@@ -33,7 +33,7 @@ namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.Solver
 
         public static void Step(ManagedConsist consist, float dt)
         {
-            int n = consist.Cars.Count;
+            int n = consist.CarCount;
             if (n == 0) return;
 
             EnsureBuffers(n);
@@ -179,7 +179,7 @@ namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.Solver
         /// </summary>
         private static void ComputeExternalForcesScaled(ManagedConsist c, float dt, float[] outScaled)
         {
-            int n = c.Cars.Count;
+            int n = c.CarCount;
 
             float decelMax = ChainSolverConfig.BrakeForceMaxDecelMps2;
             float maxCyl   = ChainSolverConfig.CylinderMaxPsi;
@@ -197,7 +197,7 @@ namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.Solver
 
             for (int i = 0; i < n; i++)
             {
-                var car = c.Cars[i];
+                var car = c.CarsArray[i];
                 float v_i = c.Velocities[i];
                 float m_i = c.Masses[i];
 
@@ -240,13 +240,13 @@ namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.Solver
             var graph = Graph.Shared;
             if (graph == null) return;
 
-            int n = c.Cars.Count;
+            int n = c.CarCount;
             for (int i = 0; i < n; i++)
             {
                 float ds = c.Velocities[i] * dt * c.OrientationSign;
                 if (Mathf.Abs(ds) < 1e-7f) continue;
 
-                var car = c.Cars[i];
+                var car = c.CarsArray[i];
                 var newLoc = graph.LocationByMoving(car.WheelBoundsF, ds);
                 car.PositionWheelBoundsFront(newLoc, graph, MovementInfo.Zero, update: true);
             }
@@ -268,7 +268,7 @@ namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.Solver
 
         private static void LogState(ManagedConsist c)
         {
-            int n = c.Cars.Count;
+            int n = c.CarCount;
             int leadIdx = c.LeadLocoIndex >= 0 ? c.LeadLocoIndex : 0;
             float vLead = c.Velocities[leadIdx];
             float vRear = c.Velocities[n - 1];

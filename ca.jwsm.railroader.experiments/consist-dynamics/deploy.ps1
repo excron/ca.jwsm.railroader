@@ -65,6 +65,10 @@ Copy-Item $InfoJson -Destination $TargetDir
 $Pdb = Join-Path $BuildOut "$ModId.pdb"
 if (Test-Path $Pdb) { Copy-Item $Pdb -Destination $TargetDir }
 
+# README explains what's wired / not wired for anyone testing the mod.
+$Readme = Join-Path $ProjectDir 'README.md'
+if (Test-Path $Readme) { Copy-Item $Readme -Destination $TargetDir }
+
 Write-Host "Deployed:" -ForegroundColor Green
 Get-ChildItem $TargetDir | ForEach-Object { Write-Host "  $($_.Name)" }
 Write-Host "Restart Railroader to pick up changes." -ForegroundColor Yellow

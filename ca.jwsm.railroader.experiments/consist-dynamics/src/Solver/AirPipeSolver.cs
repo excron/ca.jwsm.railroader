@@ -40,7 +40,7 @@ namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.Solver
 
         public static void Step(ManagedConsist consist, float dt)
         {
-            int n = consist.Cars.Count;
+            int n = consist.CarCount;
             if (n == 0) return;
 
             EnsureBuffers(n);
@@ -143,7 +143,7 @@ namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.Solver
 
             for (int i = 0; i < n; i++)
             {
-                var car = consist.Cars[i];
+                var car = consist.CarsArray[i];
                 if (car?.air == null) continue;
                 car.air.BrakeLine.Pressure     = pipe[i];
                 car.air.BrakeCylinder.Pressure = cyl[i];
