@@ -109,44 +109,59 @@ namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.Solver
                 _dPrime[i] = (_rhs[i] - a * _dPrime[i - 1]) / denom;
             }
 
-            // Back-substitution → write new pressures into pipe[]
-            pipe[n - 1] = _dPrime[n - 1];
-            for (int i = n - 2; i >= 0; i--)
-                pipe[i] = _dPrime[i] - _cPrime[i] * pipe[i + 1];
-
-            // ---- 3. Cylinder dynamics (per-car, explicit Euler) ----
+            // ---- 3. Fused back-sub + cylinder dynamics + vanilla writeback ----
             //
-            // P_cyl_target = clamp((90 - P_pipe) * ratio, 0, 64)
-            // dP_cyl/dt    = (target - cyl) / τ
+            // Three operations collapse into one backward pass:
+            //   - Thomas back-sub naturally walks n-1 → 0, writing pipe[i]
+            //   - Cylinder update at car i is purely local: needs pipe[i]
+            //     (just written this iter) and cyl[i] (its own prev value)
+            //   - Vanilla writeback is also purely local
+            // All three operations are independent across cars once pipe[i]
+            // is settled, so they collapse into one cache-friendly walk.
 
             float charge = ChainSolverConfig.ChargePressurePsi;
             float ratio  = ChainSolverConfig.CylinderRatio;
             float maxCyl = ChainSolverConfig.CylinderMaxPsi;
             float tauInv = 1f / Mathf.Max(0.01f, ChainSolverConfig.CylinderTimeConstantSec);
+            float cylDtFactor = tauInv * dt;
+            var carsArray = consist.CarsArray;
 
-            for (int i = 0; i < n; i++)
+            // Tail car (no upstream dep in back-sub).
             {
+                int i = n - 1;
+                pipe[i] = _dPrime[i];
+
                 float drop = charge - pipe[i];
                 if (drop < 0f) drop = 0f;
                 float targetCyl = drop * ratio;
                 if (targetCyl > maxCyl) targetCyl = maxCyl;
+                cyl[i] += (targetCyl - cyl[i]) * cylDtFactor;
 
-                float delta = (targetCyl - cyl[i]) * tauInv * dt;
-                cyl[i] += delta;
+                var car = carsArray[i];
+                if (car?.air != null)
+                {
+                    car.air.BrakeLine.Pressure     = pipe[i];
+                    car.air.BrakeCylinder.Pressure = cyl[i];
+                }
             }
 
-            // ---- 4. Writeback to vanilla CarAirSystem for HUD rendering ----
-            //
-            // Vanilla's TrainBrakeDisplay reads air.BrakeCylinder.Pressure
-            // for the pill-bar color; air.BrakeLine.Pressure for any other
-            // diagnostics. We write our truth into both.
-
-            for (int i = 0; i < n; i++)
+            // Walk forward of the tail backward toward the head.
+            for (int i = n - 2; i >= 0; i--)
             {
-                var car = consist.CarsArray[i];
-                if (car?.air == null) continue;
-                car.air.BrakeLine.Pressure     = pipe[i];
-                car.air.BrakeCylinder.Pressure = cyl[i];
+                pipe[i] = _dPrime[i] - _cPrime[i] * pipe[i + 1];
+
+                float drop = charge - pipe[i];
+                if (drop < 0f) drop = 0f;
+                float targetCyl = drop * ratio;
+                if (targetCyl > maxCyl) targetCyl = maxCyl;
+                cyl[i] += (targetCyl - cyl[i]) * cylDtFactor;
+
+                var car = carsArray[i];
+                if (car?.air != null)
+                {
+                    car.air.BrakeLine.Pressure     = pipe[i];
+                    car.air.BrakeCylinder.Pressure = cyl[i];
+                }
             }
         }
 
