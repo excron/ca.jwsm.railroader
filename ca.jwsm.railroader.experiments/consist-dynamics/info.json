@@ -1,0 +1,9 @@
+{
+  "Id": "ca.jwsm.railroader.experiments.consist-dynamics",
+  "DisplayName": "Experiment: Consist Dynamics (replaces vanilla physics)",
+  "Author": "Josh St. Marie",
+  "Version": "0.0.1.0",
+  "ManagerVersion": "0.27.0",
+  "AssemblyName": "ca.jwsm.railroader.experiments.consist-dynamics.dll",
+  "EntryMethod": "Ca.Jwsm.Railroader.Experiments.ConsistDynamics.ExperimentEntry.Load"
+}
