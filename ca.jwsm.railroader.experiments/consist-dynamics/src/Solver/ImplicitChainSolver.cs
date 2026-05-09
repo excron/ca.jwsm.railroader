@@ -114,18 +114,29 @@ namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.Solver
                 _dPrime[i] = (_rhs[i] - subDiag * _dPrime[i - 1]) / denom;
             }
 
-            // Back-substitution → write dv into _rhs (reuse buffer)
-            _rhs[n - 1] = _dPrime[n - 1];
+            // ---- 5. Fused back-sub + velocity update + stretch update ----
+            //
+            // Three operations collapse into one backward pass because the
+            // data dependencies line up:
+            //   - Thomas back-sub naturally walks n-1 → 0
+            //   - Velocity update v[i] += dv_i is order-independent
+            //   - Stretch update stretch[i] += (v[i] - v[i+1]) · dt:
+            //       at iter i (backward), v[i+1] was updated last iter,
+            //       v[i] gets updated this iter — both current.
+            //
+            // dv is carried in a local; _rhs[] no longer needs to be
+            // written after the Thomas forward pass produced _dPrime[].
+
+            float dvNext = _dPrime[n - 1];
+            v[n - 1] += dvNext;
+
             for (int i = n - 2; i >= 0; i--)
-                _rhs[i] = _dPrime[i] - _cPrime[i] * _rhs[i + 1];
-
-            // ---- 5. Update velocities and stretches ----
-            for (int i = 0; i < n; i++)
-                v[i] += _rhs[i];
-
-            // stretch_i^new = stretch_i^old + (v_i^new - v_{i+1}^new) · dt
-            for (int i = 0; i < stretch.Length; i++)
+            {
+                float dvCur = _dPrime[i] - _cPrime[i] * dvNext;
+                v[i] += dvCur;
                 stretch[i] += (v[i] - v[i + 1]) * dt;
+                dvNext = dvCur;
+            }
 
             // ---- 6. Visual writeback ----
             WriteCarPositions(consist, dt);
