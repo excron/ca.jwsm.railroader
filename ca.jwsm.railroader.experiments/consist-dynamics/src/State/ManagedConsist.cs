@@ -5,29 +5,45 @@ using Model.Physics;
 namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.State
 {
     /// <summary>
-    /// Our per-consist state. Owns kinematic and force values for the
-    /// rigid-consist phase 1 model. Vanilla's IntegrationSet is never
-    /// read — it only tells us "which cars belong together."
+    /// Per-consist state. Phase 2: per-car arc-length state with per-coupler
+    /// stretch. Vanilla's IntegrationSet is read only for topology (which
+    /// cars belong together); we never touch Element or its physics state.
     ///
-    /// Phase 1: single-DOF (one s, one v for the whole consist).
-    /// Phase 2+: per-car arc-length state lives here too.
+    /// Arrays are parallel-indexed over Cars: Velocities[i], Masses[i].
+    /// Stretches has length Cars.Count - 1 (one entry per coupler).
     /// </summary>
     internal sealed class ManagedConsist
     {
         public IntegrationSet VanillaSet { get; }
         public IReadOnlyList<Car> Cars => _cars;
+
+        // Lead loco — the one we observe for HUD inputs. In an MU group
+        // vanilla syncs control properties across all locos, so reading
+        // any one of them gives the right value; we pick the first found.
         public BaseLocomotive LeadLoco { get; private set; }
+        public int LeadLocoIndex { get; private set; } = -1;
 
-        // Single-DOF kinematics (phase 1). v is signed in the
-        // direction-of-travel of the lead loco.
-        public float Velocity;          // m/s
-        public float TotalMassKg;       // sum of Car.Weight (short tons → kg)
-        public float RatedTeNewtons;    // lead loco's rated TE in newtons
+        // All locos in the consist. MU is implicit — every loco contributes
+        // its own RatedTractiveEffort under the shared HUD throttle/reverser.
+        // Indices are positions in Cars[]; LocoTeNewtons[j] is the TE for
+        // the loco at LocoIndices[j].
+        public int[]   LocoIndices    { get; private set; } = System.Array.Empty<int>();
+        public float[] LocoTeNewtons  { get; private set; } = System.Array.Empty<float>();
 
-        // Cached HUD inputs (updated by ControlObserver KVO subscriptions).
-        public float Throttle;          // 0..1
-        public float TrainBrake;        // 0..1
-        public float Reverser;          // -1, 0, +1
+        public float[] Velocities { get; private set; } = System.Array.Empty<float>();
+        public float[] Masses     { get; private set; } = System.Array.Empty<float>();
+        public float[] Stretches  { get; private set; } = System.Array.Empty<float>();
+
+        // HUD inputs (set by ControlObserver KVO callbacks).
+        public float Throttle;
+        public float TrainBrake;
+        public float Reverser;
+
+        // Reverser sign for converting "consist-forward velocity" to a signed
+        // advance along each car's WheelBoundsF endOrientation. Determined
+        // once per consist on adoption from the lead loco's orientation.
+        // Phase 2 simplification: assume all cars share the lead's orientation.
+        public float OrientationSign = 1f;
 
         private readonly List<Car> _cars = new List<Car>();
 
@@ -36,46 +52,59 @@ namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.State
             VanillaSet = vanillaSet;
         }
 
-        /// <summary>
-        /// Refresh the car list and lead-loco identification from the
-        /// vanilla set. Cheap; called when topology changes (couple/decouple).
-        /// </summary>
         public void Refresh()
         {
             _cars.Clear();
             LeadLoco = null;
+            LeadLocoIndex = -1;
+
+            const float LbToKg  = 0.453592f;
+            const float LbfToN  = 4.4482216f;
+
+            var locoIdx = new List<int>();
+            var locoTe  = new List<float>();
+
+            int idx = 0;
             foreach (var car in VanillaSet.Cars)
             {
                 _cars.Add(car);
-                if (LeadLoco == null && car is BaseLocomotive loco)
-                    LeadLoco = loco;
+                if (car is BaseLocomotive loco)
+                {
+                    locoIdx.Add(idx);
+                    locoTe.Add(loco.RatedTractiveEffort * LbfToN);
+                    if (LeadLoco == null)
+                    {
+                        LeadLoco = loco;
+                        LeadLocoIndex = idx;
+                    }
+                }
+                idx++;
             }
 
-            RecomputeMassAndTe();
+            int n = _cars.Count;
+            Velocities    = new float[n];
+            Masses        = new float[n];
+            Stretches     = (n > 1) ? new float[n - 1] : System.Array.Empty<float>();
+            LocoIndices   = locoIdx.ToArray();
+            LocoTeNewtons = locoTe.ToArray();
+
+            for (int i = 0; i < n; i++)
+                Masses[i] = _cars[i].Weight * LbToKg;
+
+            float totalTe = 0f;
+            for (int j = 0; j < LocoTeNewtons.Length; j++) totalTe += LocoTeNewtons[j];
 
             ExperimentEntry.Mod?.Logger?.Log(
-                $"[adopt] consist set={VanillaSet.GetHashCode():X} cars={_cars.Count} " +
-                $"lead={(LeadLoco != null ? LeadLoco.DisplayName : "<none>")} " +
-                $"mass={TotalMassKg:F0}kg TE={RatedTeNewtons:F0}N");
+                $"[adopt] consist set={VanillaSet.GetHashCode():X} cars={n} " +
+                $"locos={LocoIndices.Length} lead={(LeadLoco != null ? LeadLoco.DisplayName : "<none>")}@{LeadLocoIndex} " +
+                $"totalMass={SumMass():F0}kg sumTE={totalTe:F0}N");
         }
 
-        private void RecomputeMassAndTe()
+        public float SumMass()
         {
-            // Car.Weight is in **pounds** (despite the survey doc claiming
-            // short tons — survey is wrong; vanilla code at
-            // IntegrationSet.cs:393/430 multiplies Weight by 0.453592 to
-            // get kg, and Car.GravityForce divides Weight by 2000 to get
-            // short tons).
-            const float LbToKg = 0.453592f;
-            float totalLb = 0f;
-            foreach (var c in _cars) totalLb += c.Weight;
-            TotalMassKg = totalLb * LbToKg;
-
-            // RatedTractiveEffort is in pounds-force.
-            const float LbfToN = 4.4482216f;
-            RatedTeNewtons = LeadLoco != null
-                ? LeadLoco.RatedTractiveEffort * LbfToN
-                : 0f;
+            float m = 0f;
+            for (int i = 0; i < Masses.Length; i++) m += Masses[i];
+            return m;
         }
     }
 }

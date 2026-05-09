@@ -16,9 +16,6 @@ namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.Driver
     /// </summary>
     internal static class ConsistDriver
     {
-        private const float AtRestVelocityEps = 0.01f;   // m/s
-        private const float InputEps          = 0.001f;
-
         private static readonly Dictionary<IntegrationSet, ManagedConsist> _consists
             = new Dictionary<IntegrationSet, ManagedConsist>();
 
@@ -36,17 +33,32 @@ namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.Driver
 
             SyncRegistry(manager);
 
+            float vEps = ChainSolverConfig.AtRestVelocityEps;
+            float iEps = ChainSolverConfig.InputEps;
+
             foreach (var consist in _consists.Values)
             {
                 if (consist.LeadLoco == null) continue;
 
-                bool atRest = Mathf.Abs(consist.Velocity) < AtRestVelocityEps;
-                bool noInput = Mathf.Abs(consist.Throttle) < InputEps
-                            && consist.TrainBrake < InputEps;
+                bool atRest = MaxAbsVelocity(consist) < vEps;
+                bool noInput = Mathf.Abs(consist.Throttle) < iEps
+                            && consist.TrainBrake < iEps;
                 if (atRest && noInput) continue;
 
-                RigidConsistSolver.Step(consist, dt);
+                ImplicitChainSolver.Step(consist, dt);
             }
+        }
+
+        private static float MaxAbsVelocity(ManagedConsist c)
+        {
+            float max = 0f;
+            var v = c.Velocities;
+            for (int i = 0; i < v.Length; i++)
+            {
+                float a = v[i] < 0f ? -v[i] : v[i];
+                if (a > max) max = a;
+            }
+            return max;
         }
 
         private static void SyncRegistry(IntegrationSetManager manager)
