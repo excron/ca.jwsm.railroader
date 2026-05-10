@@ -1,0 +1,84 @@
+{
+  "Description": "Track-switches experiment topology. Single 4-port multi-state switch at ts-spur-tip-1 (true 3-way: 1 enter + 3 diverging routes from the same origin). Rendered with custom geometry (vanilla can't handle 4-port nodes natively).",
+  "EastReference": {
+    "Comment": "Defines what 'east' means for relative-direction placements: the horizontal direction from FromNode toward ToNode. azimuthDeg=0 means along east; negative=left of east; positive=right of east.",
+    "FromNode": "N9s0",
+    "ToNode": "Nwe2"
+  },
+  "Nodes": [
+    {
+      "Id": "ts-spur-tip-1",
+      "Comment": "TRUE 3-WAY origin. 4 connected segments: ts-spur-1 (enter) + 3 outgoing routes. Marked MultiStateSwitch so our renderer takes over from vanilla.",
+      "RelativeTo": "Nwe2",
+      "Offset": { "azimuthDeg": -9, "distance": 50, "yDelta": 0 },
+      "FacingAzimuthDeg": -9,
+      "MultiStateSwitch": {
+        "EnterSegmentId": "ts-spur-1",
+        "RouteSegmentIds": ["ts-stub-left", "ts-stub-mid", "ts-stub-right"]
+      }
+    },
+    {
+      "Id": "ts-stub-left-tip",
+      "Comment": "Route 0 (left) end. Diverges 9deg further left than the spur axis.",
+      "RelativeTo": "ts-spur-tip-1",
+      "Offset": { "azimuthDeg": -18, "distance": 30, "yDelta": 0 },
+      "FacingAzimuthDeg": -18
+    },
+    {
+      "Id": "ts-stub-mid-tip",
+      "Comment": "Route 1 (middle / through) end. Continues the spur axis.",
+      "RelativeTo": "ts-spur-tip-1",
+      "Offset": { "azimuthDeg": -9, "distance": 30, "yDelta": 0 },
+      "FacingAzimuthDeg": -9
+    },
+    {
+      "Id": "ts-stub-right-tip",
+      "Comment": "Route 2 (right) end. Diverges 9deg right of the spur axis (back toward east).",
+      "RelativeTo": "ts-spur-tip-1",
+      "Offset": { "azimuthDeg": 0, "distance": 30, "yDelta": 0 },
+      "FacingAzimuthDeg": 0
+    }
+  ],
+  "Segments": [
+    {
+      "Id": "ts-spur-1",
+      "Comment": "Approach spur. Anchor (Nwe2) becomes a 3-port vanilla switch as a side effect.",
+      "AId": "Nwe2",
+      "BId": "ts-spur-tip-1",
+      "Style": "Standard",
+      "TrackClass": "Industrial",
+      "SpeedLimit": 10,
+      "Priority": 0
+    },
+    {
+      "Id": "ts-stub-left",
+      "Comment": "Route 0: leftmost diverging route off the 3-way.",
+      "AId": "ts-spur-tip-1",
+      "BId": "ts-stub-left-tip",
+      "Style": "Standard",
+      "TrackClass": "Industrial",
+      "SpeedLimit": 10,
+      "Priority": 0
+    },
+    {
+      "Id": "ts-stub-mid",
+      "Comment": "Route 1: middle / through route off the 3-way.",
+      "AId": "ts-spur-tip-1",
+      "BId": "ts-stub-mid-tip",
+      "Style": "Standard",
+      "TrackClass": "Industrial",
+      "SpeedLimit": 10,
+      "Priority": 0
+    },
+    {
+      "Id": "ts-stub-right",
+      "Comment": "Route 2: rightmost diverging route off the 3-way.",
+      "AId": "ts-spur-tip-1",
+      "BId": "ts-stub-right-tip",
+      "Style": "Standard",
+      "TrackClass": "Industrial",
+      "SpeedLimit": 10,
+      "Priority": 0
+    }
+  ]
+}
