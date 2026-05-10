@@ -23,19 +23,26 @@ Vanilla physics is **wholesale suppressed** for these systems via three Harmony 
 - **Slack action with hard stops** — couplers do nothing inside the ±4 cm slack window, then engage near-rigidly
 - **Grade resistance** — read from `Graph.GradeAtLocation` per car
 - **Body + truck rendering** — vanilla's `PositionWheelBoundsFront` does the work; we just supply the location
+- **Brake-pipe pressure waves** — 1D diffusion field along consist arc length, implicit tridiagonal solve, visible propagation through the HUD pill bar over ~1-2 seconds across long consists
+- **Coupling / uncoupling round-trip** — `UpdateSets()` invoked each tick translates `IsCoupled` flag changes into `IntegrationSet.Split` / `Union`; per-Car state cache preserves velocity + brake state across topology changes; visual coupler open/closed state synced on each Refresh
+- **Auto-couple on impact** — when uncoupled cars approach with `|relV| > 1.5 m/s` within ~rest-spacing range, both `IsCoupled` flags flip and velocities equalize (impulse-style momentum conservation); approximates vanilla's `IntegrateConstraints` auto-couple
+- **Sleep gating** — both chain and air solvers skip ticks when their respective state is at equilibrium. Idle consists scattered around the map cost essentially nothing per tick.
+- **Spline fast-path (Phase 4)** — `Graph.LocationByMoving` patched with O(1) within-segment fast path. Affects every caller in the game; majority of car-positioning calls now arithmetic instead of segment walking.
 
 ## What's NOT wired (caveats / gotchas)
 
 ### Critical to know
 
-- **MU+CutOut:** completely ignored. We don't read the CutOut flag — every loco contributes traction whether the player has CutOut'd it or not. Whatever MU group the player set up, we treat all locos as in-MU.
-- **MU directionality:** all cars in a consist are assumed to face the same direction as the lead loco. **Don't test with reverse-facing DPUs / pushers** — they'll fight the consist (apply traction backwards). Normal head-end MU stacks face forward; that's fine.
-- **Coupling / uncoupling during play:** we adopt a consist once on first sight and **don't refresh** it. If you couple or uncouple cars at runtime, our per-car state will desync from vanilla's grouping. Restart the game / reload the save after any coupling change.
+- **MU+CutOut:** completely ignored. We don't read the CutOut flag — every loco contributes traction whether the player has CutOut'd it or not.
+- **MU directionality:** all cars in a consist are assumed to face the same direction as the lead loco. Reverse-facing DPUs would fight the consist.
 - **Independent (loco) brake:** not modeled. Only the train brake.
 - **Dynamic brake:** not modeled.
-- **Wheel slip / adhesion:** not modeled. A single SD7 will trivially pull 300 cars (which is unphysical — that's why our 300-car rolling test required head-end MU).
+- **Wheel slip / adhesion:** not modeled. A single SD7 trivially pulls 300 cars without slipping — that's why the long-consist tests required head-end MU.
 - **Anglecocks:** not honored. Brake pipe is assumed continuous through the whole consist regardless of anglecock state.
 - **Brake pipe rupture / emergency application:** not modeled. Service apps only.
+- **Manual coupling at zero velocity:** auto-couple needs `|relV| > 1.5 m/s` to fire. Two stopped cars touching won't couple themselves; the player would need to nudge one. Vanilla has the same kind of threshold but lower (~4 mm/s).
+- **Position correction at impact:** vanilla's constraint solver mass-weight-projects overlapping cars apart on contact. We don't. Fast-enough impacts (above auto-couple threshold) work because velocities equalize at contact, but slow approaches can leave a small visible gap at the seam after coupling.
+- **Air hose visual connect/disconnect:** the visible drape stays drawn regardless of actual coupling state. Vanilla's `EndGear.SetConnectedTo` not driven.
 
 ### Audio / visuals that died with the suppression
 
@@ -82,11 +89,18 @@ Vanilla physics is **wholesale suppressed** for these systems via three Harmony 
 
 | Phase | Status | What it does |
 |---|---|---|
-| 1: rigid plumbing | done (in git history) | Single-DOF solver, validated suppression + writeback |
+| 1: rigid plumbing | done | Single-DOF solver, validated suppression + writeback |
 | 2: per-car + compliant couplers | done | Tridiagonal implicit solve, hard-stop dead zone, MU traction |
 | 3a: 1D brake-pipe field | done | Implicit diffusion solve, per-car cylinder dynamics, HUD pill writeback |
-| 3b: anglecocks, MU+CutOut, indep brake | not started | |
-| 4: gradient-field track caching | not started | Replace per-car `Graph.*` queries with batched field eval |
+| Sleep gating | done | Skip both solvers when state is fully quiescent |
+| Coupling/decoupling round-trip | done | Per-Car state cache, drift detection, vanilla `UpdateSets` invocation, visual coupler sync, auto-couple on impact |
+| 4: spline fast-path | done | `Graph.LocationByMoving` O(1) within-segment fast path |
+| 3b: anglecocks, MU+CutOut, indep brake, dyn brake | not started | |
+| Wheel slip / adhesion / position correction at impact | not started | |
+| Air hose visuals + manual coupling | not started | |
+| Audio / cab control visuals / map physics | not started | |
+
+**Status: parked in working state (2026-05-09).** A complete vanilla replacement would be weeks of additional work. See [`LESSONS.md`](LESSONS.md) for the durable findings, structural arguments, and prioritized resume list.
 
 ## FPS reference points (single SD7 unless noted; flat track)
 
