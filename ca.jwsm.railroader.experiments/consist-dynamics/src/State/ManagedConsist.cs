@@ -111,19 +111,51 @@ namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.State
             {
                 var car = _cars[i];
                 Masses[i] = car.Weight * LbToKg;
-                // Start charged & released — typical yard-spawn condition.
-                PipePressurePsi[i]     = Solver.ChainSolverConfig.ChargePressurePsi;
-                CylinderPressurePsi[i] = 0f;
 
-                // Sync vanilla air state to our just-initialized values so
-                // the HUD pill bar doesn't show stale pre-suppression data
-                // if AirPipeSolver.Step is skipped on the next tick (which
-                // it will be — we just set everything to its quiescent
-                // resting state).
+                // Per-car state: prefer the per-Car cache (preserved across
+                // topology changes — coupling, decoupling, split/merge).
+                // Cars not in the cache are genuinely new (fresh spawn or
+                // first-ever sight) and start at the released/charged rest
+                // condition.
+                if (Driver.ConsistDriver.TryGetCachedCarState(car, out var cached))
+                {
+                    Velocities[i]          = cached.Velocity;
+                    PipePressurePsi[i]     = cached.PipePressurePsi;
+                    CylinderPressurePsi[i] = cached.CylinderPressurePsi;
+                }
+                else
+                {
+                    Velocities[i]          = 0f;
+                    PipePressurePsi[i]     = Solver.ChainSolverConfig.ChargePressurePsi;
+                    CylinderPressurePsi[i] = 0f;
+                }
+
+                // Sync vanilla air state to our values so the HUD pill bar
+                // doesn't show stale pre-suppression data if AirPipeSolver
+                // is skipped on the next tick (which it will be when the
+                // restored state is already at equilibrium).
                 if (car?.air != null)
                 {
                     car.air.BrakeLine.Pressure     = PipePressurePsi[i];
                     car.air.BrakeCylinder.Pressure = CylinderPressurePsi[i];
+                }
+
+                // Sync visual coupler open/closed state from EndGear.IsCoupled.
+                // Vanilla normally does this every tick via SynchronizeEndGear
+                // inside Car.FixedUpdate (which we suppress). IsCoupled only
+                // flips on couple/uncouple events — exactly when Refresh runs
+                // — so doing it here is sufficient. Without this, the visible
+                // knuckle stays in its last-pose after an uncouple and the
+                // halves of a split consist look like they're still joined.
+                //
+                // Also push our pipe pressure into EndGear.AirPressure so
+                // any anglecock visuals tied to it stay current. (We still
+                // don't drive the air-hose connection or anglecock state —
+                // that's a phase 3b/4-ish item.)
+                if (car != null)
+                {
+                    SyncEndGearVisual(car[Car.LogicalEnd.A], PipePressurePsi[i]);
+                    SyncEndGearVisual(car[Car.LogicalEnd.B], PipePressurePsi[i]);
                 }
             }
 
@@ -141,6 +173,17 @@ namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.State
             float m = 0f;
             for (int i = 0; i < Masses.Length; i++) m += Masses[i];
             return m;
+        }
+
+        private static void SyncEndGearVisual(Car.EndGear endGear, float pipePressurePsi)
+        {
+            if (endGear == null) return;
+            if (endGear.Coupler != null)
+            {
+                // Knuckle animator: open when not coupled, closed when coupled.
+                endGear.Coupler.SetOpen(!endGear.IsCoupled);
+            }
+            endGear.AirPressure = pipePressurePsi;
         }
     }
 }

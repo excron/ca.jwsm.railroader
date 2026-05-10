@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Reflection;
+using Model;
 using Model.Physics;
 using UnityEngine;
 using Ca.Jwsm.Railroader.Experiments.ConsistDynamics.Input;
@@ -27,9 +28,85 @@ namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.Driver
         private static readonly FieldInfo _integrationSetsField = typeof(TrainController)
             .GetField("_integrationSets", BindingFlags.Instance | BindingFlags.NonPublic);
 
+        // Cache the no-arg UpdateSets() method. Vanilla calls this twice
+        // per FixedUpdate (before + after physics) to reconcile topology —
+        // it consumes _carsForUpdateSets (populated by Car.OnPosition events
+        // that we still fire through PositionWheelBoundsFront) and calls
+        // _integrationSets.Split / .Union when adjacent cars need their
+        // group reassigned. We suppressed TrainController.FixedUpdate, so
+        // without invoking this ourselves, couple/decouple events sit
+        // pending forever — the IsCoupled flag flips but the IntegrationSet
+        // never actually splits.
+        private static readonly MethodInfo _updateSetsMethod = typeof(TrainController)
+            .GetMethod("UpdateSets",
+                BindingFlags.Instance | BindingFlags.NonPublic,
+                binder: null,
+                types: System.Type.EmptyTypes,
+                modifiers: null);
+        private static readonly object[] _emptyArgs = System.Array.Empty<object>();
+
+
+        /// <summary>
+        /// Per-Car kinematic + air state, keyed by Car instance. Survives
+        /// across IntegrationSet topology changes (coupling, decoupling,
+        /// add/remove car) so a moving car keeps its velocity and brake state
+        /// when it migrates to a new ManagedConsist. Without this, every
+        /// coupling event would reset the consist to v=0 / brakes-released.
+        /// </summary>
+        public struct PerCarState
+        {
+            public float Velocity;
+            public float PipePressurePsi;
+            public float CylinderPressurePsi;
+        }
+
+        private static readonly Dictionary<Car, PerCarState> _carCache
+            = new Dictionary<Car, PerCarState>(256);
+
+        public static bool TryGetCachedCarState(Car car, out PerCarState state)
+            => _carCache.TryGetValue(car, out state);
+
+        /// <summary>
+        /// Persist a managed consist's per-car state into _carCache. Called
+        /// just before a consist is dropped or refreshed due to topology
+        /// drift, so the cars carry their state forward into whatever new
+        /// ManagedConsist they end up in.
+        /// </summary>
+        private static void StashCarState(ManagedConsist c)
+        {
+            int n = c.CarCount;
+            for (int i = 0; i < n; i++)
+            {
+                var car = c.CarsArray[i];
+                if (car == null) continue;
+                _carCache[car] = new PerCarState
+                {
+                    Velocity            = c.Velocities[i],
+                    PipePressurePsi     = c.PipePressurePsi[i],
+                    CylinderPressurePsi = c.CylinderPressurePsi[i],
+                };
+            }
+        }
+
+        /// <summary>
+        /// True if the IntegrationSet's car list size differs from what our
+        /// ManagedConsist was built from — a couple/decouple/add-car has
+        /// happened since adoption. Uses IntegrationSet.NumberOfCars (which
+        /// is _elements.Count under the hood — public, free, no reflection).
+        /// </summary>
+        private static bool HasTopologyDrifted(ManagedConsist c)
+            => c.VanillaSet.NumberOfCars != c.CarCount;
+
         public static void Tick(TrainController tc, float dt)
         {
             if (tc == null || _integrationSetsField == null) return;
+
+            // Topology reconcile — translates the IsCoupled flag changes
+            // (set by player UI: cut lever, coupling click) into actual
+            // IntegrationSet Split / Union calls. Without this, our drift
+            // detection in SyncRegistry has nothing to react to because
+            // the IntegrationSet never actually changes membership.
+            _updateSetsMethod?.Invoke(tc, _emptyArgs);
 
             var manager = (IntegrationSetManager)_integrationSetsField.GetValue(tc);
             if (manager == null) return;
@@ -128,6 +205,10 @@ namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.Driver
                     seen.Add(set);
                     if (!_consists.ContainsKey(set))
                     {
+                        // Brand new IntegrationSet — adopt. Refresh consults
+                        // _carCache so cars that just migrated here from
+                        // another consist (coupling, decoupling) carry their
+                        // velocity and brake state forward.
                         var managed = new ManagedConsist(set);
                         managed.Refresh();
                         _consists[set] = managed;
@@ -136,6 +217,30 @@ namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.Driver
                         {
                             var observer = new ControlObserver(managed);
                             _observers[set] = observer;
+                        }
+                    }
+                    else if (HasTopologyDrifted(_consists[set]))
+                    {
+                        // Existing set, but its car list changed — couple
+                        // attached a single car, decouple split this set,
+                        // car despawn, etc. Save current per-car state to
+                        // cache, rebuild the managed structure, observer
+                        // may need replacing if the lead loco changed.
+                        var existing = _consists[set];
+                        StashCarState(existing);
+
+                        var prevLead = existing.LeadLoco;
+                        existing.Refresh();
+
+                        if (existing.LeadLoco != prevLead)
+                        {
+                            if (_observers.TryGetValue(set, out var oldObs))
+                            {
+                                oldObs.Dispose();
+                                _observers.Remove(set);
+                            }
+                            if (existing.LeadLoco != null)
+                                _observers[set] = new ControlObserver(existing);
                         }
                     }
                 }
@@ -147,6 +252,11 @@ namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.Driver
                         if (!seen.Contains(key)) stale.Value.Add(key);
                     foreach (var key in stale.Value)
                     {
+                        // Persist the dying consist's per-car state so any
+                        // cars that survived (e.g., coupled into a new set
+                        // this same tick) can pick it up on adoption.
+                        StashCarState(_consists[key]);
+
                         if (_observers.TryGetValue(key, out var obs))
                         {
                             obs.Dispose();

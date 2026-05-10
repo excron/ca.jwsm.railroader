@@ -92,11 +92,87 @@ namespace Ca.Jwsm.Railroader.Experiments.ConsistDynamics.Solver
             for (int i = 0; i < n; i++)
             {
                 // ---- 1. Coupler β + F_old (only valid for couplers, 0..n-2) ----
+                //
+                // Coupler i connects cars[i].EndGearB to cars[i+1].EndGearA
+                // (vanilla's _elements ordering convention; our CarsArray is
+                // built from the same source). Both EndGears must report
+                // IsCoupled for the coupler to transmit force — replicates
+                // vanilla's IntegrationSet.AreCoupled exactly.
+                //
+                // When IsCoupled is flipped false (player cut lever), β_i
+                // goes to 0 and the coupler stops transmitting force. The
+                // tridiagonal row decouples cleanly. Cars on either side
+                // become free to move independently; once they physically
+                // separate by >3m, vanilla's UpdateSets calls Split and our
+                // drift detection picks it up.
                 if (i < n - 1)
                 {
-                    CouplerLaw(stretch[i], out float fOldI, out float kEff, out float cEff);
-                    _fOld[i] = fOldI;
-                    _beta[i] = kEff * dt2 + cEff * dt;
+                    var carI    = cars[i];
+                    var carNext = cars[i + 1];
+                    bool coupled = carI != null && carNext != null
+                                && carI.EndGearB    != null && carI.EndGearB.IsCoupled
+                                && carNext.EndGearA != null && carNext.EndGearA.IsCoupled;
+
+                    // Auto-couple check (replicates vanilla's IntegrateConstraints
+                    // auto-couple): if uncoupled but cars are close and there's
+                    // significant velocity differential, engage the coupler this
+                    // tick.
+                    //
+                    // We use a 1.5 m/s (~3 mph) absolute-value threshold rather
+                    // than vanilla's 0.22 m/s because at small differentials we
+                    // can't reliably distinguish "cars deliberately just been
+                    // uncoupled, drifting apart slightly" from "cars approaching
+                    // each other slowly." The high threshold means:
+                    //   - Real impacts (typical yard coupling at 2-5 mph) fire
+                    //   - Drift between halves of a freshly-uncoupled consist
+                    //     doesn't fire until they've physically separated
+                    //     enough that the position check below also fails
+                    //
+                    // GetPosition is spline math; only invoked for pairs we KNOW
+                    // are uncoupled (rare in steady state — usually just the
+                    // seam pair right after Union or right before a manual
+                    // couple), so the extra cost is bounded.
+                    if (!coupled && carI != null && carNext != null
+                        && carI.EndGearB != null && carNext.EndGearA != null)
+                    {
+                        float relV = v[i] - v[i + 1];
+                        if (Mathf.Abs(relV) > 1.5f)
+                        {
+                            UnityEngine.Vector3 posI    = carI.WheelBoundsF.GetPosition();
+                            UnityEngine.Vector3 posNext = carNext.WheelBoundsF.GetPosition();
+                            float dist = UnityEngine.Vector3.Distance(posI, posNext);
+                            float restEstimate = (carI.carLength + carNext.carLength) * 0.5f;
+                            if (dist < restEstimate + 1f)
+                            {
+                                // Auto-couple: flip flags (drives vanilla's HUD
+                                // + visual coupler state via SyncEndGearVisual
+                                // on the next Refresh), equalize the pair's
+                                // velocities (impulse-style momentum conservation
+                                // at contact), seed stretch to 0 so the spring
+                                // doesn't snap them violently.
+                                carI.EndGearB.IsCoupled = true;
+                                carNext.EndGearA.IsCoupled = true;
+                                float commonV = (v[i] * m[i] + v[i + 1] * m[i + 1])
+                                              / Mathf.Max(m[i] + m[i + 1], 1f);
+                                v[i]     = commonV;
+                                v[i + 1] = commonV;
+                                stretch[i] = 0f;
+                                coupled = true;
+                            }
+                        }
+                    }
+
+                    if (coupled)
+                    {
+                        CouplerLaw(stretch[i], out float fOldI, out float kEff, out float cEff);
+                        _fOld[i] = fOldI;
+                        _beta[i] = kEff * dt2 + cEff * dt;
+                    }
+                    else
+                    {
+                        _fOld[i] = 0f;
+                        _beta[i] = 0f;
+                    }
                 }
 
                 // ---- 2. Per-car external forces (brake / drag / grade) ----
