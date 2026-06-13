@@ -10,7 +10,7 @@ This repo is the **v1 monorepo rebuild** of a Railroader mod stack — but >95% 
 
 The "production" layer (`ca.jwsm.railroader.api`, `ca.jwsm.railroader.world`, `ca.jwsm.railroader.physics`, `ca.jwsm.railroader.ui`, `ca.jwsm.railroader.web`, the entire `ca.jwsm.railroader.mods/*` tree) contains **zero implementation code** beyond a single 31-line `UIAnchor.cs` stub. Each folder is a `README.md` describing what the mod would do — design without code.
 
-What's real is the experiments. They are well-instrumented, well-documented, and four of them produced durable findings the user wanted to carry forward. The consist-dynamics experiment in particular is a serious piece of 1D physics engineering with a long retrospective in `LESSONS.md`.
+What's real is the experiments. They are well-instrumented, well-documented, and four of them produced durable findings. The consist-dynamics experiment in particular is a serious piece of 1D physics engineering with a long retrospective in `LESSONS.md`.
 
 ---
 
@@ -23,8 +23,6 @@ So this is the **post-mortem-driven rewrite** of an earlier Railroader mod stack
 The chosen approach was: **write the contracts first, build experiments to validate specific technical questions, then build the production mods on top of validated foundations.** The user got as far as writing the contracts and validating several experiments. They never started the production mods. The git log shows the final ~30 commits are all experiment-side iteration, then a license change and stop.
 
 The "v0" predecessor referenced throughout is a separate repo collection (one repo per assembly: `ca.jwsm.railroader.api`, `ca.jwsm.railroader.mods.physics`, `ca.jwsm.railroader.mods.derailchasm`, etc.) — not present in this clone. The crib-sheets and surveys here were mined from the decompiled game (`Railroader-ILSPY/`) as research input for the v1 design.
-
-This repo is the user's pivot point: they completed the planning + scratch-work, then walked away from Railroader entirely to start Mainline Bound (a physics-honest 3D train sim on Unity 6 HDRP from scratch).
 
 ---
 
@@ -177,8 +175,6 @@ The architecture doc names a number of sibling repos that exist alongside this o
 - **Unity authoring project for VFX bundles** — separate Unity 2022.3.62f2 project, separate git repo, not a submodule. Outputs `.bundle` files consumed by `experiments/diesel-exhaust-vfx`. ([experiments/diesel-exhaust-vfx/README.md:269-281](ca.jwsm.railroader.experiments/diesel-exhaust-vfx/README.md))
 - **Unity authoring project for UI prefabs** — separate, described in [docs/ui-authoring.md](docs/ui-authoring.md). Outputs `.bundle` files; the `UIAnchor` type must be duplicated by namespace + name in both projects.
 
-No `Mainline Bound` references — the user pivoted *out* of this repo into Mainline Bound, not the other way around.
-
 ---
 
 ## Parked / broken / aborted
@@ -238,7 +234,7 @@ Phases 2-6 (sanity replication → 3-way geometry → cycling switch stand → r
 
 2. **The "20% Burst optimization ceiling" hypothesis was validated structurally.** The 20% gain from Burst-compiling vanilla's hot path turned out to be the math-kernel fraction; the other 80% was managed-object access, Unity API, event dispatch, audio side-effects, and the serial 4-iteration sweep. Attack the 80% and you skip the Burst tax. ([LESSONS.md:36-46](ca.jwsm.railroader.experiments/consist-dynamics/LESSONS.md))
 
-3. **DOTS/ECS is unreachable from a mod.** Verified during the experiment: vanilla doesn't ship `Unity.Entities`, cars are baked-in MonoBehaviours, Hybrid Renderer requires authoring-time prefab conversion. ("Tier 5 — Full DOTS/ECS rewrite — Maximum throughput, months of work" — but Not Feasible without source access.) ([LESSONS.md:65-72](ca.jwsm.railroader.experiments/consist-dynamics/LESSONS.md)) → Direct line to the user's pivot to Mainline Bound, which commits to DOTS/ECS from day one.
+3. **DOTS/ECS is unreachable from a mod.** Verified during the experiment: vanilla doesn't ship `Unity.Entities`, cars are baked-in MonoBehaviours, Hybrid Renderer requires authoring-time prefab conversion. ("Tier 5 — Full DOTS/ECS rewrite — Maximum throughput, months of work" — but Not Feasible without source access.) ([LESSONS.md:65-72](ca.jwsm.railroader.experiments/consist-dynamics/LESSONS.md))
 
 4. **Found bug in own survey doc.** During consist-dynamics testing the user caught that `docs/research/physics-vanilla-survey.md` said `Car.Weight` was in short tons. It's pounds. Verified via `Car.GravityForce` (Weight/2000) and `IntegrationSet.cs:393, :430` (Weight × 0.453592). ([LESSONS.md:142-147](ca.jwsm.railroader.experiments/consist-dynamics/LESSONS.md))
 
@@ -252,7 +248,7 @@ Phases 2-6 (sanity replication → 3-way geometry → cycling switch stand → r
 
 9. **The "no copy-paste from v0" rule is enforced by architecture, not just discipline.** "Anything migrated from `_reference/` to v1 must be **rewritten**, not copy-pasted. Reading legacy code as 'what the answer looked like before' is fine; pasting it forward is how layer violations sneak back in." ([ARCHITECTURE.md:189-196](ARCHITECTURE.md))
 
-10. **The architecture doc never made contact with implementation.** A 1,642-line contract written before any production code, then frozen when the user pivoted. As a design exercise it's impressive; as a working stack it's a graveyard with very nice tombstones.
+10. **The architecture doc never made contact with implementation.** A 1,642-line contract written before any production code, then frozen when the work stopped. As a design exercise it's impressive; as a working stack it's a graveyard with very nice tombstones.
 
 ---
 
@@ -289,4 +285,3 @@ If reviving any of this: **start with consist-dynamics + LESSONS.md.** That's th
 - The v0 collection (`<name>-v0` GitHub archives, also locally under `_reference/`) — what this repo was supposed to replace.
 - [docs/research/crib-sheets/](docs/research/crib-sheets/) — 62 reference docs covering the entire game surface; the deepest external artifact in this repo and the source of truth for "is there a patch point for X" questions.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — the document this whole repo orbits.
-- The user's Mainline Bound project (separate repo) — the eventual destination of all the structural learning here, especially the DOTS-feasibility verdict from the consist-dynamics LESSONS.md and the "vanilla owns existence, we own motion" architectural split (now applicable in reverse: at Mainline Bound, *we* own everything).
